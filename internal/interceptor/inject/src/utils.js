@@ -676,11 +676,12 @@ var WXU = (() => {
 
   /**
    * @param {RequestInfo | URL} url
+   * @param {RequestInit} [init]
    * @returns {Promise<[null, Response] | [Error, null]>}
    */
-  async function __wx_fetch(url) {
+  async function __wx_fetch(url, init) {
     try {
-      const r = await fetch(url);
+      const r = await fetch(url, init);
       return [null, r];
     } catch (err) {
       return [/** @type {Error} */ (err), null];
@@ -1281,6 +1282,194 @@ function __wx_channels_handle_copy__() {
   WXU.copy(location.href);
   WXU.toast("复制成功");
 }
+
+var __wx_channels_spec_size_cache__ = {};
+var __wx_channels_spec_size_pending__ = {};
+var __wx_channels_spec_size_failed_at__ = {};
+var __wx_channels_spec_size_retry_interval_ms__ = 30 * 1000;
+
+function __wx_channels_build_media_url_with_spec(url, spec) {
+  if (!url || !spec) {
+    return url;
+  }
+  try {
+    const u = new URL(url);
+    u.searchParams.set("X-snsvideoflag", spec);
+    return u.toString();
+  } catch (err) {
+    // 兜底处理，保证在 URL 解析失败时仍能拼接
+    var sep = url.includes("?") ? "&" : "?";
+    if (url.includes("X-snsvideoflag=")) {
+      return url.replace(/([?&]X-snsvideoflag=)[^&]*/, `$1${spec}`);
+    }
+    return `${url}${sep}X-snsvideoflag=${spec}`;
+  }
+}
+
+function __wx_channels_get_spec_size_cache_key(profile, spec) {
+  var profile_key = profile.id || profile.nonce_id || profile.url || "";
+  var spec_key = spec && spec.fileFormat ? String(spec.fileFormat) : "unknown";
+  return `${profile_key}::${spec_key}`;
+}
+
+function __wx_channels_parse_size_from_headers(response) {
+  if (!response || !response.headers) {
+    return 0;
+  }
+  var content_length = Number(response.headers.get("Content-Length"));
+  if (Number.isFinite(content_length) && content_length > 0) {
+    return content_length;
+  }
+  var content_range = response.headers.get("Content-Range") || "";
+  var matched = content_range.match(/\/(\d+)$/);
+  if (matched && matched[1]) {
+    var total = Number(matched[1]);
+    if (Number.isFinite(total) && total > 0) {
+      return total;
+    }
+  }
+  return 0;
+}
+
+function __wx_channels_extract_exact_size_from_spec(spec) {
+  if (!spec || typeof spec !== "object") {
+    return 0;
+  }
+  var keys = [
+    "fileSize",
+    "filesize",
+    "size",
+    "downloadSize",
+    "totalSize",
+    "mediaSize",
+  ];
+  for (let i = 0; i < keys.length; i += 1) {
+    const v = Number(spec[keys[i]]);
+    if (Number.isFinite(v) && v > 0) {
+      return v;
+    }
+  }
+  return 0;
+}
+
+function __wx_channels_get_spec_size_state(profile, spec) {
+  var key = __wx_channels_get_spec_size_cache_key(profile, spec);
+  var exact_size = __wx_channels_extract_exact_size_from_spec(spec);
+  if (exact_size > 0) {
+    return {
+      size: exact_size,
+      status: "known",
+    };
+  }
+  var cached_size = Number(__wx_channels_spec_size_cache__[key]);
+  if (Number.isFinite(cached_size) && cached_size > 0) {
+    return {
+      size: cached_size,
+      status: "known",
+    };
+  }
+  if (__wx_channels_spec_size_pending__[key]) {
+    return {
+      size: 0,
+      status: "loading",
+    };
+  }
+  return {
+    size: 0,
+    status: "unknown",
+  };
+}
+
+function __wx_channels_format_spec_size_label(profile, spec) {
+  var { size, status } = __wx_channels_get_spec_size_state(profile, spec);
+  if (size > 0) {
+    return WXU.bytes_to_size(size);
+  }
+  if (status === "loading") {
+    return "读取中";
+  }
+  return "--";
+}
+
+function __wx_channels_build_spec_menu_label(profile, spec) {
+  var base_label = WXU.format_media_spec_short_label(spec) || spec.fileFormat;
+  var size_label = __wx_channels_format_spec_size_label(profile, spec);
+  if (!size_label) {
+    return base_label;
+  }
+  return `${base_label} (${size_label})`;
+}
+
+function __wx_channels_build_spec_menu_title(profile, spec) {
+  var title = WXU.format_media_spec_label(spec) || spec.fileFormat;
+  var { size, status } = __wx_channels_get_spec_size_state(profile, spec);
+  if (size > 0) {
+    var readable_size = WXU.bytes_to_size(size);
+    return `${title} · 大小 ${readable_size}`;
+  }
+  if (status === "loading") {
+    return `${title} · 大小读取中`;
+  }
+  return `${title} · 大小未知`;
+}
+
+async function __wx_channels_fetch_spec_size(profile, spec) {
+  if (!profile || !profile.url || !spec || !spec.fileFormat) {
+    return 0;
+  }
+  var key = __wx_channels_get_spec_size_cache_key(profile, spec);
+  var cached = Number(__wx_channels_spec_size_cache__[key]);
+  if (Number.isFinite(cached) && cached > 0) {
+    return cached;
+  }
+  var exact_size = __wx_channels_extract_exact_size_from_spec(spec);
+  if (exact_size > 0) {
+    __wx_channels_spec_size_cache__[key] = exact_size;
+    return exact_size;
+  }
+  var failed_at = Number(__wx_channels_spec_size_failed_at__[key] || 0);
+  if (failed_at && Date.now() - failed_at < __wx_channels_spec_size_retry_interval_ms__) {
+    return 0;
+  }
+  if (__wx_channels_spec_size_pending__[key]) {
+    return __wx_channels_spec_size_pending__[key];
+  }
+  __wx_channels_spec_size_pending__[key] = (async () => {
+    var media_url = __wx_channels_build_media_url_with_spec(
+      profile.url,
+      spec.fileFormat,
+    );
+    var size = 0;
+    var [head_err, head_resp] = await WXU.fetch(media_url, {
+      method: "HEAD",
+    });
+    if (!head_err) {
+      size = __wx_channels_parse_size_from_headers(head_resp);
+    }
+    if (!size) {
+      var [range_err, range_resp] = await WXU.fetch(media_url, {
+        method: "GET",
+        headers: {
+          Range: "bytes=0-0",
+        },
+      });
+      if (!range_err) {
+        size = __wx_channels_parse_size_from_headers(range_resp);
+      }
+    }
+    if (size > 0) {
+      __wx_channels_spec_size_cache__[key] = size;
+      delete __wx_channels_spec_size_failed_at__[key];
+    } else {
+      __wx_channels_spec_size_failed_at__[key] = Date.now();
+    }
+    return size;
+  })().finally(() => {
+    delete __wx_channels_spec_size_pending__[key];
+  });
+  return __wx_channels_spec_size_pending__[key];
+}
+
 /**
  * 所有下载功能统一先调用该方法
  * 由该方法分发到具体的 download 方法中
@@ -1331,27 +1520,37 @@ function __wx_channels_download_cur__() {
   profile.data = __wx_channels_store__.buffers;
   __wx_channels_download(profile);
 }
-/** 打印下载原始文件命令 */
-function __wx_channels_handle_print_download_command() {
+/** 下载命令 */
+function __wx_channels_handle_print_download_command(spec) {
   const [err, profile] = WXU.check_feed_existing();
   if (err) return;
-  var _profile = { ...profile };
+  var target_url = (() => {
+    if (spec) {
+      return __wx_channels_build_media_url_with_spec(profile.url, spec);
+    }
+    return profile.url;
+  })();
+  if (!target_url) {
+    WXU.error({ msg: "当前内容不支持下载命令" });
+    return;
+  }
   var filename = WXU.build_filename(
-    _profile,
-    null,
+    profile,
+    spec || null,
     WXU.config.downloadFilenameTemplate,
   );
   if (!filename) {
-    alert("文件名生成失败");
+    WXU.error({ msg: "文件名生成失败" });
     return;
   }
-  var command = `download --url "${_profile.url}"`;
-  if (_profile.key) {
-    command += ` --key ${_profile.key}`;
+  var command = `download --url "${target_url}"`;
+  if (profile.key) {
+    command += ` --key ${profile.key}`;
   }
   command += ` --filename "${filename}.mp4"`;
   WXU.log({ msg: command });
-  WXU.toast("请在终端查看下载命令");
+  WXU.copy(command);
+  WXU.toast("下载命令已复制到剪贴板，并打印到终端");
 }
 /** 下载视频封面 */
 async function __wx_channels_handle_download_cover() {
@@ -1403,9 +1602,13 @@ async function __wx_channels_handle_download_cover() {
  */
 function __wx_attach_download_dropdown_menu(trigger) {
   const { DropdownMenu, Menu, MenuItem } = WUI;
-  const submenu$ = Menu({
+  const download_submenu$ = Menu({
     children: [],
   });
+  const command_submenu$ = Menu({
+    children: [],
+  });
+  var hover_token = 0;
   const dropdown$ = DropdownMenu({
     $trigger: trigger,
     zIndex: 99999,
@@ -1422,13 +1625,25 @@ function __wx_attach_download_dropdown_menu(trigger) {
       })(),
       MenuItem({
         label: "更多下载",
-        submenu: submenu$,
+        submenu: download_submenu$,
         onMouseEnter() {
-          submenu$.show();
+          download_submenu$.show();
         },
         onMouseLeave() {
-          if (!submenu$.isHover) {
-            submenu$.hide();
+          if (!download_submenu$.isHover) {
+            download_submenu$.hide();
+          }
+        },
+      }),
+      MenuItem({
+        label: "下载命令",
+        submenu: command_submenu$,
+        onMouseEnter() {
+          command_submenu$.show();
+        },
+        onMouseLeave() {
+          if (!command_submenu$.isHover) {
+            command_submenu$.hide();
           }
         },
       }),
@@ -1465,34 +1680,90 @@ function __wx_attach_download_dropdown_menu(trigger) {
       })(),
     ],
     onMouseEnter() {
-      if (submenu$.isOpen) {
-        submenu$.hide();
+      if (download_submenu$.isOpen) {
+        download_submenu$.hide();
+      }
+      if (command_submenu$.isOpen) {
+        command_submenu$.hide();
       }
     },
   });
   dropdown$.ui.$trigger.onMouseEnter(() => {
-    const download_menus = [
-      ...(() => {
-        const [err, profile] = WXU.check_feed_existing({
-          silence: true,
+    var current_hover_token = ++hover_token;
+    const [err, profile] = WXU.check_feed_existing({
+      silence: true,
+    });
+    if (err) {
+      download_submenu$.setChildren([]);
+      command_submenu$.setChildren([]);
+      dropdown$.show();
+      return;
+    }
+    var specs = Array.isArray(profile.spec)
+      ? profile.spec.filter((item) => item && item.fileFormat)
+      : [];
+    if (specs.length === 0) {
+      download_submenu$.setChildren([
+        MenuItem({
+          label: "当前规格",
+          onClick() {
+            __wx_channels_handle_click_download__(null);
+            dropdown$.hide();
+          },
+        }),
+      ]);
+      command_submenu$.setChildren(
+        profile.url
+          ? [
+              MenuItem({
+                label: "当前规格",
+                onClick() {
+                  __wx_channels_handle_print_download_command(null);
+                  dropdown$.hide();
+                },
+              }),
+            ]
+          : [],
+      );
+      dropdown$.show();
+      return;
+    }
+    const render_spec_submenus = () => {
+      var download_menus = specs.map((spec) => {
+        return MenuItem({
+          label: __wx_channels_build_spec_menu_label(profile, spec),
+          title: __wx_channels_build_spec_menu_title(profile, spec),
+          onClick() {
+            __wx_channels_handle_click_download__(spec.fileFormat);
+            dropdown$.hide();
+          },
         });
-        if (err) {
-          return [];
-        }
-        return profile.spec.map((spec) => {
-          const title = WXU.format_media_spec_label(spec) || spec.fileFormat;
-          return MenuItem({
-            label: WXU.format_media_spec_short_label(spec),
-            title,
-            onClick() {
-              __wx_channels_handle_click_download__(spec.fileFormat);
-              dropdown$.hide();
-            },
-          });
+      });
+      var command_menus = specs.map((spec) => {
+        return MenuItem({
+          label: __wx_channels_build_spec_menu_label(profile, spec),
+          title: __wx_channels_build_spec_menu_title(profile, spec),
+          onClick() {
+            __wx_channels_handle_print_download_command(spec.fileFormat);
+            dropdown$.hide();
+          },
         });
-      })(),
-    ];
-    submenu$.setChildren(download_menus);
+      });
+      download_submenu$.setChildren(download_menus);
+      command_submenu$.setChildren(command_menus);
+    };
+    var size_fetching = Promise.all(
+      specs.map((spec) => {
+        return __wx_channels_fetch_spec_size(profile, spec);
+      }),
+    );
+    render_spec_submenus();
+    size_fetching.then(() => {
+      if (current_hover_token !== hover_token) {
+        return;
+      }
+      render_spec_submenus();
+    });
     dropdown$.show();
   });
   dropdown$.ui.$trigger.onMouseLeave(() => {
