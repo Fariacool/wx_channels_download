@@ -26,10 +26,36 @@ type Config struct {
 	Mode     string
 }
 
+const EnvConfigPath = "WX_CHANNELS_DOWNLOAD_CONFIG_FILEPATH"
+
 func New(ver string, mode string) *Config {
 	exe, _ := os.Executable()
 	exe_dir := filepath.Dir(exe)
 	base_dir := exe_dir
+	var config_filepath string
+	var has_config bool
+	filename := "config.yaml"
+	if env_config_filepath := strings.TrimSpace(os.Getenv(EnvConfigPath)); env_config_filepath != "" {
+		config_filepath = env_config_filepath
+		if abs, err := filepath.Abs(env_config_filepath); err == nil {
+			config_filepath = abs
+		}
+		base_dir = filepath.Dir(config_filepath)
+		filename = filepath.Base(config_filepath)
+		if _, err := os.Stat(config_filepath); err == nil {
+			has_config = true
+		}
+		viper.SetConfigFile(config_filepath)
+		return &Config{
+			RootDir:  base_dir,
+			Filename: filename,
+			FullPath: config_filepath,
+			Existing: has_config,
+			Version:  ver,
+			Mode:     mode,
+		}
+	}
+
 	var candidates []string
 	candidates = append(candidates, exe_dir)
 	if _, caller_file, _, ok := runtime.Caller(1); ok {
@@ -41,20 +67,14 @@ func New(ver string, mode string) *Config {
 		proj_root := filepath.Dir(cfg_dir)
 		candidates = append(candidates, proj_root)
 	}
-	var config_filepath string
-	var has_config bool
 	for _, dir := range candidates {
-		p := filepath.Join(dir, "config.yaml")
+		p := filepath.Join(dir, filename)
 		if _, err := os.Stat(p); err == nil {
 			base_dir = dir
 			config_filepath = p
 			has_config = true
 			break
 		}
-	}
-	filename := "config.yaml"
-	if config_filepath == "" {
-		config_filepath = filepath.Join(base_dir, filename)
 	}
 	viper.SetConfigFile(config_filepath)
 	c := &Config{
@@ -94,6 +114,30 @@ func (c *Config) LoadConfig() error {
 		Group:       "Proxy",
 	})
 	Register(ConfigItem{
+		Key:         "proxy.tcpRelay.enabled",
+		Type:        ConfigTypeBool,
+		Default:     false,
+		Description: "是否启用 TCP relay，用于接收 iptables/nftables 透明重定向的原始 TCP 流量",
+		Title:       "启用 TCP Relay",
+		Group:       "Proxy",
+	})
+	Register(ConfigItem{
+		Key:         "proxy.tcpRelay.hostname",
+		Type:        ConfigTypeString,
+		Default:     "127.0.0.1",
+		Description: "TCP relay 监听主机名",
+		Title:       "TCP Relay 主机",
+		Group:       "Proxy",
+	})
+	Register(ConfigItem{
+		Key:         "proxy.tcpRelay.port",
+		Type:        ConfigTypeInt,
+		Default:     9900,
+		Description: "TCP relay 监听端口，必须与代理端口不同",
+		Title:       "TCP Relay 端口",
+		Group:       "Proxy",
+	})
+	Register(ConfigItem{
 		Key:         "cert.file",
 		Type:        ConfigTypeString,
 		Default:     "",
@@ -118,11 +162,35 @@ func (c *Config) LoadConfig() error {
 		Group:       "Proxy",
 	})
 	Register(ConfigItem{
+		Key:         "proxy.tun",
+		Type:        ConfigTypeBool,
+		Default:     false,
+		Description: "启用 TUN 模式（网络层流量转发），开启后不会设置系统代理",
+		Title:       "TUN 模式",
+		Group:       "Proxy",
+	})
+	Register(ConfigItem{
+		Key:         "proxy.defaultInterface",
+		Type:        ConfigTypeString,
+		Default:     "",
+		Description: "TUN 模式下指定默认出口网卡名称，留空时自动检测",
+		Title:       "默认网卡",
+		Group:       "Proxy",
+	})
+	Register(ConfigItem{
 		Key:         "proxy.skipInstallRootCert",
 		Type:        ConfigTypeBool,
 		Default:     false,
 		Description: "是否跳过安装根证书（需要自行手动信任/导入证书）",
 		Title:       "不安装根证书",
+		Group:       "Proxy",
+	})
+	Register(ConfigItem{
+		Key:         "proxy.upstreamProxy",
+		Type:        ConfigTypeString,
+		Default:     "",
+		Description: "上游代理地址，用于转发所有请求到指定代理（如 http://127.0.0.1:7890）",
+		Title:       "上游代理",
 		Group:       "Proxy",
 	})
 	Register(ConfigItem{
@@ -156,6 +224,14 @@ func (c *Config) LoadConfig() error {
 		Default:     true,
 		Description: "是否全局捕获前端错误，出现错误时弹窗展示错误信息",
 		Title:       "错误展示",
+		Group:       "Debug",
+	})
+	Register(ConfigItem{
+		Key:         "debug.echolog",
+		Type:        ConfigTypeBool,
+		Default:     false,
+		Description: "是否启用 Echo 代理日志",
+		Title:       "Echo 日志",
 		Group:       "Debug",
 	})
 	Register(ConfigItem{
@@ -218,8 +294,8 @@ func (c *Config) LoadConfig() error {
 		Key:         "download.defaultHighest",
 		Type:        ConfigTypeBool,
 		Default:     false,
-		Description: "已失效：点击下载图标时是否下载原始视频（该配置不再生效）",
-		Title:       "原始视频（已失效）",
+		Description: "点击下载图标时是否下载原始视频（该配置不再生效）",
+		Title:       "原始视频",
 		Group:       "Download",
 	})
 	Register(ConfigItem{
@@ -279,12 +355,21 @@ func (c *Config) LoadConfig() error {
 		Group:       "API",
 	})
 	Register(ConfigItem{
+		Key:         "mp.enabled",
+		Type:        ConfigTypeBool,
+		Default:     nil,
+		Description: "是否启用公众号本地服务，本地服务会提供接口、RSS 等功能",
+		Title:       "启用本地服务",
+		Group:       "OfficialAccount",
+	})
+	Register(ConfigItem{
 		Key:         "mp.disabled",
 		Type:        ConfigTypeBool,
 		Default:     true,
-		Description: "是否禁用公众号本地服务，本地服务会提供接口、RSS 等功能",
-		Title:       "启用本地服务",
+		Description: "Deprecated: use mp.enabled instead. This legacy option disables the OfficialAccount local service.",
+		Title:       "Disable local service (deprecated)",
 		Group:       "OfficialAccount",
+		Deprecated:  true,
 	})
 	Register(ConfigItem{
 		Key:         "mp.remoteServer.protocol",
@@ -398,6 +483,24 @@ func (c *Config) LoadConfig() error {
 		Title:       "D1 Database Name",
 		Group:       "Cloudflare",
 	})
+	// Update 自更新配置
+	Register(ConfigItem{
+		Key:         "update.proxy",
+		Type:        ConfigTypeString,
+		Default:     "",
+		Description: "update 命令从 GitHub 下载更新时使用的代理地址（如 http://127.0.0.1:7890），与 proxy.upstreamProxy 不同",
+		Title:       "更新代理",
+		Group:       "Update",
+	})
+	Register(ConfigItem{
+		Key:         "update.mirror",
+		Type:        ConfigTypeString,
+		Default:     "",
+		Description: "update 命令从 GitHub 下载更新时使用的镜像地址（如 https://ghproxy.com/），会拼接在原始 URL 之前",
+		Title:       "更新镜像",
+		Group:       "Update",
+	})
+
 	// FileHelper 微信文件传输助手配置
 	Register(ConfigItem{
 		Key:         "filehelper.enabled",
@@ -481,6 +584,13 @@ func (c *Config) GetString(path string) string   { return viper.GetString(path) 
 func (c *Config) GetInt(path string) int         { return viper.GetInt(path) }
 func (c *Config) GetBool(path string) bool       { return viper.GetBool(path) }
 func (c *Config) GetFloat64(path string) float64 { return viper.GetFloat64(path) }
+
+func IsMPEnabled() bool {
+	if viper.IsSet("mp.enabled") {
+		return viper.GetBool("mp.enabled")
+	}
+	return !viper.GetBool("mp.disabled")
+}
 
 func EnsureDirIfMissing(path string) error {
 	_, err := os.Stat(path)

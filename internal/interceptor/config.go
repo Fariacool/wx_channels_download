@@ -2,7 +2,6 @@ package interceptor
 
 import (
 	"os"
-	"path"
 	"path/filepath"
 	"strconv"
 
@@ -29,19 +28,26 @@ type InterceptorConfig struct {
 	RemoteServerHostname                string `json:"remoteServerHostname"`
 	RemoteServerPort                    int    `json:"remoteServerPort"`
 	OfficialAccountServerRefreshToken   string `json:"officialServerRefreshToken"`
-	OfficialAccountServerDisabled       bool   `json:"officialServerDisabled"`
+	OfficialAccountEnabled              bool   `json:"officialAccountEnabled"`
 	OfficialAccountRemoteServerProtocol string `json:"officialRemoteServerProtocol"`
 	OfficialAccountRemoteServerHostname string `json:"officialRemoteServerHostname"`
 	OfficialAccountRemoteServerPort     int    `json:"officialRemoteServerPort"`
 	ProxyDevice                         string
 	ProxySetSystem                      bool
+	ProxyTun                            bool
+	ProxyDefaultInterface               string
 	ProxyServerHostname                 string
 	ProxyServerPort                     int
+	ProxyTCPRelayEnabled                bool
+	ProxyTCPRelayHostname               string
+	ProxyTCPRelayPort                   int
 	ProxySkipInstallRootCert            bool
+	ProxyUpstreamProxy                  string
 	PagespyEnabled                      bool
 	PageppyServerProtocol               string `json:"pagespyServerProtocol"` // pagespy调试地址协议，如 http
 	PageppyServerAPI                    string `json:"pagespyServerAPI"`      // pagespy调试地址，如 debug.weixin.qq.com
 	DebugShowError                      bool
+	EchoLogEnabled                      bool
 	ChannelsDisableLocationToHome       bool   // 禁止从feed重定向到home
 	InjectExtraScriptAfterJSMain        string // 额外注入的 js
 	InjectGlobalScriptFilepath          string // 全局脚本路径
@@ -55,6 +61,7 @@ func NewInterceptorSettings(c *config.Config) *InterceptorConfig {
 	settings := &InterceptorConfig{
 		Version:                             c.Version,
 		DebugShowError:                      viper.GetBool("debug.error"),
+		EchoLogEnabled:                      viper.GetBool("debug.echolog"),
 		PagespyEnabled:                      viper.GetBool("pagespy.enabled"),
 		PageppyServerProtocol:               viper.GetString("pagespy.protocol"),
 		PageppyServerAPI:                    viper.GetString("pagespy.api"),
@@ -73,15 +80,21 @@ func NewInterceptorSettings(c *config.Config) *InterceptorConfig {
 		RemoteServerProtocol:                viper.GetString("download.remoteServer.protocol"),
 		RemoteServerHostname:                viper.GetString("download.remoteServer.hostname"),
 		RemoteServerPort:                    viper.GetInt("download.remoteServer.port"),
-		OfficialAccountServerDisabled:       viper.GetBool("mp.disabled"),
+		OfficialAccountEnabled:              config.IsMPEnabled(),
 		OfficialAccountServerRefreshToken:   viper.GetString("mp.refreshToken"),
 		OfficialAccountRemoteServerProtocol: viper.GetString("mp.remoteServer.protocol"),
 		OfficialAccountRemoteServerHostname: viper.GetString("mp.remoteServer.hostname"),
 		OfficialAccountRemoteServerPort:     viper.GetInt("mp.remoteServer.port"),
 		ProxySetSystem:                      viper.GetBool("proxy.system"),
+		ProxyTun:                            viper.GetBool("proxy.tun"),
+		ProxyDefaultInterface:               viper.GetString("proxy.defaultInterface"),
 		ProxyServerPort:                     viper.GetInt("proxy.port"),
 		ProxyServerHostname:                 viper.GetString("proxy.hostname"),
+		ProxyTCPRelayEnabled:                viper.GetBool("proxy.tcpRelay.enabled"),
+		ProxyTCPRelayHostname:               viper.GetString("proxy.tcpRelay.hostname"),
+		ProxyTCPRelayPort:                   viper.GetInt("proxy.tcpRelay.port"),
 		ProxySkipInstallRootCert:            viper.GetBool("proxy.skipInstallRootCert"),
+		ProxyUpstreamProxy:                  viper.GetString("proxy.upstreamProxy"),
 		InjectExtraScriptAfterJSMain:        viper.GetString("inject.extraScript.afterJSMain"),
 		InjectGlobalScriptFilepath:          viper.GetString("inject.globalScript"),
 		t:                                   c,
@@ -91,26 +104,35 @@ func NewInterceptorSettings(c *config.Config) *InterceptorConfig {
 		// 所以这里做个兼容，保证旧的配置项仍然有效
 		settings.ChannelsDisableLocationToHome = true
 	}
-	global_script_path := path.Join(c.RootDir, "global.js")
-	if _, err := os.Stat(global_script_path); err == nil {
-		script_byte, err := os.ReadFile(global_script_path)
-		if err == nil {
-			settings.InjectGlobalScriptFilepath = global_script_path
-			settings.InjectGlobalScript = string(script_byte)
-		}
+	globalScriptFilepath := resolveScriptPath(c.RootDir, settings.InjectGlobalScriptFilepath)
+	if script, ok := readScriptFile(globalScriptFilepath); ok {
+		settings.InjectGlobalScriptFilepath = globalScriptFilepath
+		settings.InjectGlobalScript = script
 	}
 	extra_js_filepath := settings.InjectExtraScriptAfterJSMain
 	if extra_js_filepath != "" {
-		// If it's a relative path, resolve it against the current working directory
-		if !filepath.IsAbs(extra_js_filepath) {
-			extra_js_filepath = filepath.Join(c.RootDir, extra_js_filepath)
-		}
-		if _, err := os.Stat(extra_js_filepath); err == nil {
-			script_byte, err := os.ReadFile(extra_js_filepath)
-			if err == nil {
-				settings.InjectExtraScriptAfterJSMain = string(script_byte)
-			}
+		extra_js_filepath = resolveScriptPath(c.RootDir, extra_js_filepath)
+		if script, ok := readScriptFile(extra_js_filepath); ok {
+			settings.InjectExtraScriptAfterJSMain = script
 		}
 	}
 	return settings
+}
+
+func resolveScriptPath(rootDir, scriptPath string) string {
+	if scriptPath == "" || filepath.IsAbs(scriptPath) {
+		return scriptPath
+	}
+	return filepath.Join(rootDir, scriptPath)
+}
+
+func readScriptFile(scriptPath string) (string, bool) {
+	if scriptPath == "" {
+		return "", false
+	}
+	scriptByte, err := os.ReadFile(scriptPath)
+	if err != nil {
+		return "", false
+	}
+	return string(scriptByte), true
 }

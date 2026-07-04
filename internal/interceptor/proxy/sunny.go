@@ -31,7 +31,7 @@ type SunnyNetProxy struct {
 	plugins  []interface{}
 }
 
-func NewProxy(cert []byte, private_key []byte) (InnerProxy, error) {
+func NewProxy(cert []byte, private_key []byte, upstreamProxy string, tunEnabled bool, proxyHostname string, proxyPort int, defaultInterface string, tcpRelayConfig *TCPRelayConfig) (InnerProxy, error) {
 	Sunny := SunnyNet.NewSunny()
 	return &SunnyNetProxy{Sunny: Sunny}, nil
 }
@@ -57,6 +57,10 @@ func (p *SunnyNetProxy) Start(port int) error {
 			fmt.Println("进程代理驱动启动失败，使用系统代理")
 		}
 	}
+	return nil
+}
+
+func (p *SunnyNetProxy) Close() error {
 	return nil
 }
 
@@ -92,8 +96,9 @@ type SunnyNetContext struct {
 }
 
 type SunnyNetContextReq struct {
-	URL  SunnyNetContextURL
-	Body []byte
+	URL    SunnyNetContextURL
+	Body   []byte
+	Header http.Header
 }
 type SunnyNetContextURL struct {
 	Hostname func() string
@@ -166,7 +171,7 @@ func (c *sunnyBridgeContext) Req() *ContextReq {
 			RawQuery: r.URL.RawQuery,
 		},
 		Body:   bytes.NewReader(r.Body),
-		Header: nil,
+		Header: r.Header,
 	}
 }
 
@@ -265,7 +270,8 @@ func (p *SunnyNetProxy) HandleHTTPRequest(Conn SunnyNet.ConnHTTP) {
 					Pathname: parsed_url.Path,
 					RawQuery: parsed_url.RawQuery,
 				},
-				Body: body,
+				Body:   body,
+				Header: Conn.GetRequestHeader(),
 			}
 			return &req
 		}
@@ -292,7 +298,7 @@ func (p *SunnyNetProxy) HandleHTTPRequest(Conn SunnyNet.ConnHTTP) {
 						}
 						if targetProto == "wss" {
 							targetProto = "https"
-						}				
+						}
 						targetHost := pl.Target.Host
 						targetPort := pl.Target.Port
 						if targetPort <= 0 {
@@ -393,7 +399,8 @@ func (p *SunnyNetProxy) HandleHTTPRequest(Conn SunnyNet.ConnHTTP) {
 						Pathname: parsed_url.Path,
 						RawQuery: parsed_url.RawQuery,
 					},
-					Body: nil,
+					Body:   nil,
+					Header: Conn.GetRequestHeader(),
 				}
 				return &req
 			},

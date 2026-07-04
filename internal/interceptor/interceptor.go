@@ -43,8 +43,12 @@ func NewInterceptor(cfg *InterceptorConfig, cert *certificate.CertFileAndKeyFile
 }
 
 func (c *Interceptor) Start() error {
-	echo.SetLogEnabled(false)
-	client, err := proxy.NewProxy(c.Cert.Cert, c.Cert.PrivateKey)
+	echo.SetLogEnabled(c.Settings.EchoLogEnabled)
+	client, err := proxy.NewProxy(c.Cert.Cert, c.Cert.PrivateKey, c.Settings.ProxyUpstreamProxy, c.Settings.ProxyTun, c.Settings.ProxyServerHostname, c.Settings.ProxyServerPort, c.Settings.ProxyDefaultInterface, &proxy.TCPRelayConfig{
+		Enabled:  c.Settings.ProxyTCPRelayEnabled,
+		Hostname: c.Settings.ProxyTCPRelayHostname,
+		Port:     c.Settings.ProxyTCPRelayPort,
+	})
 	if err != nil {
 		return err
 	}
@@ -63,18 +67,24 @@ func (c *Interceptor) Start() error {
 			},
 		})
 	}
+	downloadTarget := &proxy.TargetConfig{
+		Protocol: c.Settings.APIServerProtocol,
+		Host:     c.Settings.APIServerHostname,
+		Port:     c.Settings.APIServerPort,
+	}
 	if c.Settings.RemoteServerEnabled {
-		client.AddPlugin(&proxy.Plugin{
-			Match: "remoteapi.weixin.qq.com",
-			Target: &proxy.TargetConfig{
-				Protocol: c.Settings.RemoteServerProtocol,
-				Host:     c.Settings.RemoteServerHostname,
-				Port:     c.Settings.RemoteServerPort,
-			},
-		})
+		downloadTarget = &proxy.TargetConfig{
+			Protocol: c.Settings.RemoteServerProtocol,
+			Host:     c.Settings.RemoteServerHostname,
+			Port:     c.Settings.RemoteServerPort,
+		}
 	}
 	client.AddPlugin(&proxy.Plugin{
-		Match: "localapi.weixin.qq.com",
+		Match:  "weixin110.qq.com",
+		Target: downloadTarget,
+	})
+	client.AddPlugin(&proxy.Plugin{
+		Match: "kf.qq.com",
 		Target: &proxy.TargetConfig{
 			Protocol: c.Settings.APIServerProtocol,
 			Host:     c.Settings.APIServerHostname,
@@ -98,7 +108,7 @@ func (c *Interceptor) Start() error {
 			}
 		}
 	}
-	if !buildtags.UsingSunnyNet && c.Settings.ProxySetSystem {
+	if !buildtags.UsingSunnyNet && c.Settings.ProxySetSystem && !c.Settings.ProxyTun {
 		if err := system.EnableProxy(system.ProxySettings{
 			Device:   c.Settings.ProxyDevice,
 			Hostname: c.Settings.ProxyServerHostname,
@@ -114,7 +124,7 @@ func (c *Interceptor) Start() error {
 }
 
 func (c *Interceptor) Stop() error {
-	if !buildtags.UsingSunnyNet && c.Settings.ProxySetSystem {
+	if !buildtags.UsingSunnyNet && c.Settings.ProxySetSystem && !c.Settings.ProxyTun {
 		arg := system.ProxySettings{
 			Device:   c.Settings.ProxyDevice,
 			Hostname: c.Settings.ProxyServerHostname,
@@ -123,6 +133,11 @@ func (c *Interceptor) Stop() error {
 		err := system.DisableProxy(arg)
 		if err != nil {
 			return fmt.Errorf("关闭系统代理失败: %v", err)
+		}
+	}
+	if c.proxy != nil {
+		if err := c.proxy.Close(); err != nil {
+			return fmt.Errorf("关闭代理服务失败: %v", err)
 		}
 	}
 	return nil

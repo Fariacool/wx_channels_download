@@ -1,30 +1,9 @@
 /**
  * @file 所有的工具函数 + API + 事件总线
  */
-var FakeLocalAPIServerAddr = "localapi.weixin.qq.com";
-var FakeRemoteAPIServerAddr = "remoteapi.weixin.qq.com";
-var FakeOfficialAccountServerAddr = "official.weixin.qq.com";
-var FakeRemoteAPIServerProtocol = "https";
-var FakeLocalAPIServerProtocol = "https";
-var WSServerProtocol = "wss";
-if (typeof window.__wx_channels_config__ === "undefined") {
-  __wx_channels_config__ = {};
+if (typeof WXEnv === "undefined") {
+  throw new Error("env.js must be loaded before utils.js");
 }
-if (typeof window.WXVariable === "undefined") {
-  WXVariable = {};
-}
-var __wx_assets_base = (function () {
-  // var cfg = __wx_channels_config__;
-  // if (cfg && cfg.apiServerProtocol && cfg.apiServerAddr) {
-  //   return (
-  //     cfg.apiServerProtocol +
-  //     "://" +
-  //     cfg.apiServerAddr +
-  //     "/__wx_channels_assets"
-  //   );
-  // }
-  return "https://channels.weixin.qq.com/__wx_channels_assets";
-})();
 var __wx_username;
 var __wx_channels_tip__ = {};
 var __wx_channels_cur_video = null;
@@ -108,6 +87,593 @@ var WXU = (() => {
       }, 1000);
     });
   }
+  function __wx_ensure_feedback_style() {
+    if (document.getElementById("wx-feedback-style")) {
+      return;
+    }
+    const style = document.createElement("style");
+    style.id = "wx-feedback-style";
+    style.textContent = `
+.wx-top-tip {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  z-index: 2147483647;
+  max-width: min(420px, calc(100vw - 32px));
+  box-sizing: border-box;
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: #fa5151;
+  color: #fff;
+  font-size: 14px;
+  line-height: 20px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.24);
+  transform: translateX(-50%);
+}
+.wx-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 72px;
+  z-index: 2147483647;
+  max-width: min(360px, calc(100vw - 32px));
+  box-sizing: border-box;
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.78);
+  color: #fff;
+  font-size: 14px;
+  line-height: 20px;
+  text-align: center;
+  transform: translateX(-50%);
+}
+.wx-loading-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.08);
+}
+.wx-loading-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.78);
+  color: #fff;
+  font-size: 14px;
+}
+.wx-loading-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: wx-feedback-spin 0.8s linear infinite;
+}
+@keyframes wx-feedback-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}`;
+    document.head.appendChild(style);
+  }
+  function __wx_top_tip(text) {
+    __wx_ensure_feedback_style();
+    const tip = document.createElement("div");
+    tip.className = "wx-top-tip";
+    tip.textContent = text || "";
+    document.body.appendChild(tip);
+    setTimeout(() => {
+      tip.remove();
+    }, 3000);
+    return {
+      hide() {
+        tip.remove();
+      },
+    };
+  }
+  function __wx_toast(text) {
+    __wx_ensure_feedback_style();
+    const toast = document.createElement("div");
+    toast.className = "wx-toast";
+    toast.textContent = text || "";
+    document.body.appendChild(toast);
+    setTimeout(() => {
+      toast.remove();
+    }, 2200);
+    return {
+      hide() {
+        toast.remove();
+      },
+    };
+  }
+  function __wx_loading(text = "加载中") {
+    __wx_ensure_feedback_style();
+    const mask = document.createElement("div");
+    mask.className = "wx-loading-mask";
+    mask.innerHTML = `<div class="wx-loading-box"><span class="wx-loading-spinner"></span><span>${text}</span></div>`;
+    document.body.appendChild(mask);
+    return {
+      hide() {
+        mask.remove();
+      },
+    };
+  }
+  function __wx_menu_item(options) {
+    return options || null;
+  }
+  function __wx_create_menu(options = {}) {
+    const root = document.createElement("div");
+    root.className = options.className || "wx-simple-menu";
+    root.style.position = "fixed";
+    root.style.display = "none";
+    root.style.zIndex = String(options.zIndex || 99999);
+    document.body.appendChild(root);
+
+    let anchor = null;
+    let placement = options.placement || "bottom-end";
+    let isHover = false;
+    let isOpen = false;
+    let hideTimer = null;
+    let childMenus = [];
+    let cleanupAutoUpdate = null;
+
+    function clearHideTimer() {
+      if (hideTimer) {
+        clearTimeout(hideTimer);
+        hideTimer = null;
+      }
+    }
+    function normalizePlacement(value) {
+      if (value === "right") {
+        return "right-start";
+      }
+      if (value === "left") {
+        return "left-start";
+      }
+      return value || "bottom-end";
+    }
+    function stopAutoUpdate() {
+      if (typeof cleanupAutoUpdate === "function") {
+        cleanupAutoUpdate();
+      }
+      cleanupAutoUpdate = null;
+    }
+    function startAutoUpdate() {
+      stopAutoUpdate();
+      if (!anchor) {
+        return;
+      }
+      const update = () => {
+        if (isOpen) {
+          position();
+        }
+      };
+      window.addEventListener("resize", update);
+      window.addEventListener("scroll", update, true);
+      cleanupAutoUpdate = () => {
+        window.removeEventListener("resize", update);
+        window.removeEventListener("scroll", update, true);
+      };
+    }
+    function scheduleHide() {
+      clearHideTimer();
+      hideTimer = setTimeout(() => {
+        if (!isHover) {
+          api.hide();
+        }
+      }, 100);
+    }
+    function fallbackPosition() {
+      if (!anchor) {
+        return;
+      }
+      const rect = anchor.getBoundingClientRect();
+      const width = root.offsetWidth || 160;
+      const height = root.offsetHeight || 40;
+      const gap = 6;
+      const padding = 8;
+      const normalizedPlacement = normalizePlacement(placement);
+      const side = normalizedPlacement.split("-")[0];
+      const align = normalizedPlacement.split("-")[1] || "center";
+      let left = rect.left + rect.width / 2 - width / 2;
+      let top = rect.bottom + gap;
+
+      if (align === "start") {
+        left = side === "top" || side === "bottom" ? rect.left : left;
+        top = side === "left" || side === "right" ? rect.top : top;
+      } else if (align === "end") {
+        left = side === "top" || side === "bottom" ? rect.right - width : left;
+        top = side === "left" || side === "right" ? rect.bottom - height : top;
+      }
+
+      if (side === "top") {
+        top = rect.top - height - gap;
+      } else if (side === "left") {
+        left = rect.left - width - gap;
+        if (
+          left < padding &&
+          rect.right + gap + width <= window.innerWidth - padding
+        ) {
+          left = rect.right + gap;
+        }
+      } else if (side === "right") {
+        left = rect.right + gap;
+        if (
+          left + width > window.innerWidth - padding &&
+          rect.left - width - gap >= padding
+        ) {
+          left = rect.left - width - gap;
+        }
+      } else if (top + height > window.innerHeight - padding) {
+        const topSide = rect.top - height - gap;
+        if (topSide >= padding) {
+          top = topSide;
+        }
+      }
+
+      left = Math.max(
+        padding,
+        Math.min(left, window.innerWidth - width - padding),
+      );
+      top = Math.max(
+        padding,
+        Math.min(top, window.innerHeight - height - padding),
+      );
+      root.style.left = `${left}px`;
+      root.style.top = `${top}px`;
+    }
+    function position() {
+      if (!anchor) {
+        return Promise.resolve();
+      }
+      fallbackPosition();
+      return Promise.resolve();
+    }
+    function renderLabel(item, target) {
+      if (item.label instanceof Node) {
+        target.appendChild(item.label);
+        return;
+      }
+      target.innerHTML = item.label == null ? "" : String(item.label);
+    }
+    function renderItem(item) {
+      if (!item) {
+        return null;
+      }
+      const itemEl = document.createElement("div");
+      itemEl.className = "wx-simple-menu-item";
+      if (item.title) {
+        itemEl.title = item.title;
+      }
+      const labelEl = document.createElement("span");
+      labelEl.className = "wx-simple-menu-item-label";
+      renderLabel(item, labelEl);
+      itemEl.appendChild(labelEl);
+      if (item.submenu) {
+        const arrow = document.createElement("span");
+        arrow.className = "wx-simple-menu-item-arrow";
+        arrow.textContent = ">";
+        itemEl.appendChild(arrow);
+        itemEl.addEventListener("mouseenter", () => {
+          item.submenu.show(itemEl, "right");
+        });
+        itemEl.addEventListener("mouseleave", () => {
+          setTimeout(() => {
+            if (!item.submenu.isHover) {
+              item.submenu.hide();
+            }
+          }, 100);
+        });
+      }
+      if (typeof item.onMouseEnter === "function") {
+        itemEl.addEventListener("mouseenter", item.onMouseEnter);
+      }
+      if (typeof item.onMouseLeave === "function") {
+        itemEl.addEventListener("mouseleave", item.onMouseLeave);
+      }
+      if (typeof item.onClick === "function") {
+        itemEl.addEventListener("click", async (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          await item.onClick(event);
+        });
+      }
+      return itemEl;
+    }
+
+    root.addEventListener("mouseenter", () => {
+      isHover = true;
+      clearHideTimer();
+    });
+    root.addEventListener("mouseleave", () => {
+      isHover = false;
+      scheduleHide();
+    });
+
+    const api = {
+      ui: {
+        $trigger: {
+          onMouseEnter(fn) {
+            options.trigger?.addEventListener("mouseenter", fn);
+          },
+          onMouseLeave(fn) {
+            options.trigger?.addEventListener("mouseleave", (event) => {
+              setTimeout(() => {
+                fn(event);
+              }, 100);
+            });
+          },
+        },
+      },
+      get isHover() {
+        return isHover;
+      },
+      get isOpen() {
+        return isOpen;
+      },
+      setChildren(items) {
+        childMenus.forEach((menu) => menu.hide());
+        childMenus = [];
+        root.innerHTML = "";
+        (items || []).filter(Boolean).forEach((item) => {
+          if (item.submenu) {
+            childMenus.push(item.submenu);
+          }
+          const itemEl = renderItem(item);
+          if (itemEl) {
+            root.appendChild(itemEl);
+          }
+        });
+        if (isOpen) {
+          position();
+        }
+      },
+      show(nextAnchor, nextPlacement) {
+        anchor = nextAnchor || anchor || options.trigger || null;
+        placement = nextPlacement || options.placement || placement;
+        clearHideTimer();
+        stopAutoUpdate();
+        root.style.display = "block";
+        root.style.visibility = "hidden";
+        isOpen = true;
+        position().then(() => {
+          if (!isOpen) {
+            return;
+          }
+          root.style.visibility = "visible";
+          startAutoUpdate();
+        });
+      },
+      hide() {
+        clearHideTimer();
+        stopAutoUpdate();
+        childMenus.forEach((menu) => menu.hide());
+        root.style.display = "none";
+        isOpen = false;
+      },
+      destroy() {
+        api.hide();
+        root.remove();
+      },
+    };
+    api.setChildren(options.children || []);
+    return api;
+  }
+  function __wx_create_dropdown_menu(trigger, options = {}) {
+    return __wx_create_menu({
+      ...options,
+      trigger,
+      placement: options.placement || "bottom-end",
+    });
+  }
+  function __wx_create_popover(trigger, options = {}) {
+    const root = document.createElement("div");
+    root.className = options.className || "wx-simple-popover";
+    root.style.position = "fixed";
+    root.style.display = "none";
+    root.style.zIndex = String(options.zIndex || 99998);
+    root.innerHTML = options.content || "";
+    document.body.appendChild(root);
+    let isOpen = false;
+    function position() {
+      const rect = trigger.getBoundingClientRect();
+      const width = root.offsetWidth || 320;
+      const height = root.offsetHeight || 40;
+      let left = rect.right - width;
+      let top = rect.bottom + 6;
+      left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
+      top = Math.max(8, Math.min(top, window.innerHeight - height - 8));
+      root.style.left = `${left}px`;
+      root.style.top = `${top}px`;
+    }
+    const api = {
+      open() {
+        root.style.display = "block";
+        root.style.visibility = "hidden";
+        isOpen = true;
+        position();
+        root.style.visibility = "visible";
+      },
+      close() {
+        root.style.display = "none";
+        isOpen = false;
+      },
+      toggle() {
+        if (isOpen) {
+          api.close();
+        } else {
+          api.open();
+        }
+      },
+    };
+    trigger.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      api.toggle();
+    });
+    if (options.closeOnClickOutside) {
+      document.addEventListener("click", (event) => {
+        if (!isOpen) {
+          return;
+        }
+        if (root.contains(event.target) || trigger.contains(event.target)) {
+          return;
+        }
+        api.close();
+      });
+    }
+    return api;
+  }
+  function confirm_overwrite_download(msg) {
+    return new Promise((resolve) => {
+      const content =
+        (msg || "已存在该下载内容") + "，是否重新下载并覆盖已存在文件？";
+      if (typeof document === "undefined" || !document.body) {
+        resolve(window.confirm(content));
+        return;
+      }
+      const timeless = window.Timeless;
+      if (
+        !timeless ||
+        !timeless.ui ||
+        !timeless.ui.DialogCore ||
+        typeof timeless.render !== "function" ||
+        typeof window.Dialog !== "function" ||
+        typeof window.View !== "function"
+      ) {
+        resolve(window.confirm(content));
+        return;
+      }
+      const dialog$ = new timeless.ui.DialogCore({
+        closeable: true,
+      });
+      let settled = false;
+      const $root = document.createElement("div");
+      let offStateChange = null;
+      const dialogView = OverwriteDownloadConfirmDialog({
+        store: dialog$,
+        content,
+        onConfirm() {
+          close(true);
+        },
+      });
+      function handleKeydown(e) {
+        if (e.key === "Escape") {
+          close(false);
+        }
+      }
+      function close(overwrite) {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        document.removeEventListener("keydown", handleKeydown);
+        if (typeof offStateChange === "function") {
+          offStateChange();
+        }
+        dialog$.hide();
+        dialogView.onUnmounted();
+        $root.remove();
+        resolve(overwrite);
+      }
+      offStateChange = dialog$.onStateChange((state) => {
+        if (settled || state.visible || state.enter) {
+          return;
+        }
+        close(false);
+      });
+      timeless.render(dialogView, $root);
+      document.addEventListener("keydown", handleKeydown);
+      document.body.appendChild($root);
+      dialog$.show();
+    });
+  }
+  function get_media_url(media) {
+    if (!media) {
+      return "";
+    }
+    return (media.url || "") + (media.urlToken || "");
+  }
+  function get_picture_cover_url(media) {
+    if (!media) {
+      return "";
+    }
+    return (
+      media.coverUrl ||
+      media.thumbUrl ||
+      media.fullThumbUrl ||
+      media.fullUrl ||
+      get_media_url(media)
+    );
+  }
+  function get_feed_title(feed) {
+    if (feed.objectDesc && feed.objectDesc.description) {
+      return feed.objectDesc.description;
+    }
+    if (
+      feed.objectDesc &&
+      feed.objectDesc.flowCardDesc &&
+      feed.objectDesc.flowCardDesc.description
+    ) {
+      return feed.objectDesc.flowCardDesc.description;
+    }
+    if (
+      feed.objectDesc &&
+      feed.objectDesc.finderNewlifeDesc &&
+      feed.objectDesc.finderNewlifeDesc.richTextTitle
+    ) {
+      return feed.objectDesc.finderNewlifeDesc.richTextTitle;
+    }
+    return feed.description || feed.id || "";
+  }
+  function format_bgm(feed) {
+    var musicInfo =
+      feed.objectDesc &&
+      feed.objectDesc.followPostInfo &&
+      feed.objectDesc.followPostInfo.musicInfo;
+    if (!musicInfo || !musicInfo.mediaStreamingUrl) {
+      return null;
+    }
+    return {
+      url: musicInfo.mediaStreamingUrl,
+      filename: "bgm.mp3",
+      name: musicInfo.name || "",
+      artist: musicInfo.artist || "",
+      doc_id: musicInfo.docId || "",
+      doc_type: musicInfo.docType || 0,
+    };
+  }
+  function build_picture_zip_files(feed) {
+    var files = [];
+    var mediaList = feed.files || [];
+    for (let i = 0; i < mediaList.length; i += 1) {
+      var item = mediaList[i];
+      var media_url = get_media_url(item);
+      if (!media_url) {
+        continue;
+      }
+      files.push({
+        url: media_url,
+        filename: `${files.length + 1}.jpg`,
+      });
+    }
+    if (feed.bgm && feed.bgm.url) {
+      files.push({
+        url: feed.bgm.url,
+        filename: feed.bgm.filename || "bgm.mp3",
+      });
+    }
+    return files;
+  }
+  function build_picture_zip_url(feed) {
+    return `zip://weixin.qq.com?files=${encodeURIComponent(
+      JSON.stringify(build_picture_zip_files(feed)),
+    )}`;
+  }
   /**
    * 格式化 FeedProfile，增加了一些字段
    * @param {ChannelsFeed} feed
@@ -158,7 +724,8 @@ var WXU = (() => {
       // 直播没有 media
       return null;
     }
-    var media = feed.objectDesc.media[0];
+    var mediaList = feed.objectDesc.media || [];
+    var media = mediaList[0];
     if (type === 2) {
       // 图片视频
       return {
@@ -166,9 +733,10 @@ var WXU = (() => {
         type: "picture",
         id: feed.id,
         nonce_id: feed.objectNonceId,
-        cover_url: media.coverUrl,
-        title: feed.objectDesc.description,
-        files: feed.objectDesc.media,
+        cover_url: get_picture_cover_url(media),
+        title: get_feed_title(feed),
+        files: mediaList,
+        bgm: format_bgm(feed),
         url: "",
         key: 0,
         spec: [],
@@ -185,12 +753,12 @@ var WXU = (() => {
         type: "media",
         id: feed.id,
         nonce_id: feed.objectNonceId,
-        title: feed.objectDesc.description,
-        url: media.url + media.urlToken,
+        title: get_feed_title(feed),
+        url: get_media_url(media),
         key: media.decodeKey,
         cover_url: media.coverUrl,
         createtime: feed.createtime,
-        spec: media.spec,
+        spec: media.spec || [],
         size: media.fileSize,
         duration: media.videoPlayLen,
         contact: {
@@ -256,7 +824,7 @@ var WXU = (() => {
       body: JSON.stringify(params),
     });
     if (_alert) {
-      weui.topTips(params.msg);
+      __wx_top_tip(params.msg);
     }
   }
   const script_loaded_map = {};
@@ -321,7 +889,7 @@ var WXU = (() => {
       filename: default_name,
       id: profile.id,
       title: profile.title,
-      spec: "original",
+      spec: null,
       created_at: profile.createtime,
       download_at: (new Date().valueOf() / 1000).toFixed(0),
     };
@@ -335,7 +903,9 @@ var WXU = (() => {
       }
     }
     var filename = template
-      ? template.replace(/\{\{([^}]+)\}\}/g, (match, key) => params[key])
+      ? template.replace(/\{\{([^}]+)\}\}/g, (match, key) =>
+          params[key] === null || params[key] === undefined ? "" : params[key],
+        )
       : default_name;
     if (typeof window.beforeFilename === "function") {
       return window.beforeFilename(filename, params, profile, spec);
@@ -586,7 +1156,7 @@ var WXU = (() => {
         False && False("非单或双声道wav raw pcm格式音频，无法转码");
         return;
       }
-      await __wx_load_script(__wx_assets_base + "/lib/recorder.min.js");
+      await __wx_load_script(__wx_asset_url("/lib/recorder.min.js"));
       var rec = Recorder(newSet).mock(pcm, sampleRate);
       rec.stop(function (blob, duration) {
         True(blob, duration, rec);
@@ -762,7 +1332,10 @@ var WXU = (() => {
           if (opt.spec) {
             return opt.spec;
           }
-          if (feed.spec[0]) {
+          if (WXU.config.defaultHighest || opt.spec === null) {
+            return null;
+          }
+          if (feed.spec && feed.spec[0]) {
             return feed.spec[0].fileFormat;
           }
           return null;
@@ -777,36 +1350,53 @@ var WXU = (() => {
         }
         if (feed.type === "picture") {
           opt.suffix = ".zip";
-          feed.url = `zip://weixin.qq.com?files=${encodeURIComponent(
-            JSON.stringify(
-              feed.files.map((f, idx) => {
-                return {
-                  url: f.url,
-                  filename: `${idx + 1}.jpg`,
-                };
-              }),
-            ),
-          )}`;
+          feed.url = build_picture_zip_url(feed);
           console.log("[]feed.url", feed.url);
         }
-        if (opt.suffix !== ".jpg" && spec) {
-          feed.url = feed.url + "&X-snsvideoflag=" + spec;
+        if (opt.suffix !== ".jpg") {
+          if (spec) {
+            feed.url = feed.url + "&X-snsvideoflag=" + spec;
+          } else {
+            // 该下载原始视频逻辑参考自 https://github.com/putyy/res-downloader/blob/master/core/resource.go#L142
+            var u = new URL(decodeURIComponent(feed.url));
+            var filekey = u.searchParams.get("encfilekey");
+            var token = u.searchParams.get("token");
+            if (filekey && token) {
+              var new_url = new URL(u.origin + u.pathname);
+              new_url.searchParams.set("encfilekey", filekey);
+              new_url.searchParams.set("token", token);
+              feed.url = new_url.toString();
+            }
+          }
         }
+        const requestBody = {
+          id: feed.id,
+          nonce_id: feed.nonce_id || feed.objectNonceId || "",
+          url: feed.url,
+          title: feed.title,
+          filename: filename,
+          key: Number(feed.key),
+          spec,
+          suffix: opt.suffix,
+        };
+        const createTask = (overwrite) =>
+          WXU.request({
+            method: "POST",
+            url: WXEnv.apiOrigin + "/api/task/create",
+            body: {
+              ...requestBody,
+              overwrite: !!overwrite,
+            },
+          });
         // console.log("[downloader.create]before WXU.request");
-        var [err, data] = await WXU.request({
-          method: "POST",
-          url:
-            APIServerProtocol + "://" + FakeAPIServerAddr + "/api/task/create",
-          body: {
-            id: feed.id,
-            url: feed.url,
-            title: feed.title,
-            filename: filename,
-            key: Number(feed.key),
-            spec,
-            suffix: opt.suffix,
-          },
-        });
+        var [err, data] = await createTask(false);
+        if (err && err.code === 409) {
+          const overwrite = await confirm_overwrite_download(err.message);
+          if (!overwrite) {
+            return [null, { skipped: true }];
+          }
+          [err, data] = await createTask(true);
+        }
         WXU.downloader.show();
         if (err) {
           return [err, null];
@@ -832,12 +1422,12 @@ var WXU = (() => {
               return opt.spec;
             }
             if (WXU.config.defaultHighest || opt.spec === null) {
-              return "original";
+              return null;
             }
-            if (feed.spec[0]) {
+            if (feed.spec && feed.spec[0]) {
               return feed.spec[0].fileFormat;
             }
-            return "original";
+            return null;
           })();
           var filename = WXU.build_filename(
             feed,
@@ -845,41 +1435,42 @@ var WXU = (() => {
             WXU.config.downloadFilenameTemplate,
           );
           if (filename) {
+            var suffix = opt.suffix;
             if (feed.type === "picture") {
-              opt.suffix = ".zip";
-              feed.url = `zip://weixin.qq.com?files=${encodeURIComponent(
-                JSON.stringify(
-                  feed.files.map((f, idx) => {
-                    return {
-                      url: f.url,
-                      filename: `${idx + 1}.jpg`,
-                    };
-                  }),
-                ),
-              )}`;
+              suffix = ".zip";
+              feed.url = build_picture_zip_url(feed);
             }
-            if (opt.suffix !== ".jpg") {
-              feed.url = feed.url + "&X-snsvideoflag=" + spec;
+            if (suffix !== ".jpg") {
+              if (spec) {
+                feed.url = feed.url + "&X-snsvideoflag=" + spec;
+              } else {
+                var u = new URL(decodeURIComponent(feed.url));
+                var filekey = u.searchParams.get("encfilekey");
+                var token = u.searchParams.get("token");
+                if (filekey && token) {
+                  var new_url = new URL(u.origin + u.pathname);
+                  new_url.searchParams.set("encfilekey", filekey);
+                  new_url.searchParams.set("token", token);
+                  feed.url = new_url.toString();
+                }
+              }
             }
             body.feeds.push({
               id: feed.id,
+              nonce_id: feed.nonce_id || feed.objectNonceId || "",
               url: feed.url,
               title: feed.title,
               key: Number(feed.key),
               filename,
               spec,
-              suffix: opt.suffix,
+              suffix,
             });
           }
         }
         WXU.downloader.show();
         var [err, data] = await WXU.request({
           method: "POST",
-          url:
-            APIServerProtocol +
-            "://" +
-            FakeAPIServerAddr +
-            "/api/task/create_batch",
+          url: WXEnv.apiOrigin + "/api/task/create_batch",
           body,
         });
         if (err) {
@@ -911,7 +1502,7 @@ var WXU = (() => {
      * 类型转换相关
      */
     async media_buffer_to_wav(...args) {
-      await __wx_load_script(__wx_assets_base + "/lib/recorder.min.js");
+      await __wx_load_script(__wx_asset_url("/lib/recorder.min.js"));
       return mediaBufferToWav(...args);
     },
     wav_to_mp3_blob: wavBlobToMP3,
@@ -957,6 +1548,8 @@ var WXU = (() => {
       }
     },
     build_filename,
+    build_picture_zip_files,
+    build_picture_zip_url,
     load_script: __wx_load_script,
     find_elm: __wx_find_elm,
     get_queries,
@@ -967,11 +1560,14 @@ var WXU = (() => {
     log: __wx_log,
     error: __wx_error,
     loading() {
-      return weui.loading();
+      return __wx_loading();
     },
     toast(text) {
-      return weui.toast(text);
+      return __wx_toast(text);
     },
+    menu_item: __wx_menu_item,
+    create_dropdown_menu: __wx_create_dropdown_menu,
+    create_popover: __wx_create_popover,
     append_media_buf(buf) {
       __wx_channels_store__.buffers.push(buf);
     },
@@ -1030,11 +1626,18 @@ var WXU = (() => {
     play_cur_video: __wx_channels_play_cur_video,
     check_feed_existing: __wx_check_feed_existing,
     fetch: __wx_fetch,
-    observe_node(selector, cb) {
+    observe_node(selector, cb, error_cb) {
       var $existing = document.querySelector(selector);
       if ($existing) {
         cb($existing);
         return;
+      }
+      var timer = null;
+      if (error_cb) {
+        timer = setTimeout(() => {
+          observer.disconnect();
+          error_cb();
+        }, 5000);
       }
       var observer = new MutationObserver((mutations, obs) => {
         mutations.forEach((mutation) => {
@@ -1042,6 +1645,7 @@ var WXU = (() => {
             mutation.addedNodes.forEach((node) => {
               if (node.nodeType === 1) {
                 if (node.matches(selector) || node.querySelector(selector)) {
+                  clearTimeout(timer);
                   cb(
                     node.matches(selector)
                       ? node
@@ -1080,7 +1684,11 @@ var WXU = (() => {
           try {
             var data = JSON.parse(xhr.responseText);
             if (data.code !== 0) {
-              resolve([new Error(data.msg), null]);
+              const err = new Error(data.msg);
+              err.code = data.code;
+              err.data = data.data;
+              err.response = data;
+              resolve([err, null]);
               return;
             }
             resolve([null, data.data]);
@@ -1097,11 +1705,11 @@ var WXU = (() => {
       });
     },
     async save(blob, filename) {
-      await __wx_load_script(__wx_assets_base + "/lib/FileSaver.min.js");
+      await __wx_load_script(__wx_asset_url("/lib/FileSaver.min.js"));
       saveAs(blob, filename);
     },
     async Zip() {
-      await __wx_load_script(__wx_assets_base + "/lib/jszip.min.js");
+      await __wx_load_script(__wx_asset_url("/lib/jszip.min.js"));
       const zip = new JSZip();
       return zip;
     },
@@ -1129,21 +1737,17 @@ var WXU = (() => {
      * @returns {ChannelsConfig}
      */
     get config() {
-      /** @type {ChannelsConfig} */
-      return {
-        ...(__wx_channels_config__ || {}),
-        ...(WXVariable || {}),
-      };
+      return WXEnv.config;
     },
     get version() {
       return __wx_channels_version__;
     },
     env: {
       get isChannels() {
-        return window.location.href.includes("weixin.qq.com");
+        return WXEnv.isChannels;
       },
       get isWxwork() {
-        return window.ua.includes("wxwork");
+        return WXEnv.isWxwork;
       },
     },
   };
@@ -1165,26 +1769,31 @@ async function __wx_channels_download(profile) {
  */
 async function __wx_channels_download3(profile) {
   console.log("__wx_channels_download3");
-  const files = profile.files;
+  const files = WXU.build_picture_zip_files(profile);
+  if (files.length === 0) {
+    WXU.error({ msg: "没有可下载的内容" });
+    return;
+  }
   const zip = await WXU.Zip();
   zip.file("contact.txt", JSON.stringify(profile.contact, null, 2));
-  const folder = zip.folder("images");
-  const fetchPromises = files
-    .map((f) => f.url)
-    .map(async (url, index) => {
-      const response = await fetch(url);
-      const blob = await response.blob();
-      folder.file(index + 1 + ".png", blob);
-    });
   const ins = WXU.loading();
+  const fetchPromises = files.map(async (item) => {
+    const response = await fetch(item.url);
+    if (!response.ok) {
+      throw new Error(`${item.filename} ${response.status}`);
+    }
+    const blob = await response.blob();
+    zip.file(item.filename, blob);
+  });
   try {
     await Promise.all(fetchPromises);
     const content = await zip.generateAsync({ type: "blob" });
     await WXU.save(content, profile.filename + ".zip");
   } catch (err) {
     WXU.error({ msg: "下载失败，" + err.message });
+  } finally {
+    ins.hide();
   }
-  ins.hide();
 }
 /**
  * 下载加密视频
@@ -1219,6 +1828,16 @@ async function __wx_channels_download4(feed, opt) {
   }
   if (opt.spec) {
     feed.url = feed.url + "&X-snsvideoflag=" + opt.spec;
+  } else {
+    var u = new URL(decodeURIComponent(feed.url));
+    var filekey = u.searchParams.get("encfilekey");
+    var token = u.searchParams.get("token");
+    if (filekey && token) {
+      var new_url = new URL(u.origin + u.pathname);
+      new_url.searchParams.set("encfilekey", filekey);
+      new_url.searchParams.set("token", token);
+      feed.url = new_url.toString();
+    }
   }
   if (WXU.config.downloadPauseWhenDownload) {
     WXU.pause_cur_video();
@@ -1282,33 +1901,93 @@ function __wx_channels_handle_copy__() {
   WXU.copy(location.href);
   WXU.toast("复制成功");
 }
+/**
+ * 所有下载功能统一先调用该方法
+ * 由该方法分发到具体的 download 方法中
+ * @param {string | null} spec 规格信息
+ * @param {boolean} mp3 是否转换为 MP3
+ */
+async function __wx_channels_handle_click_download__(spec, mp3) {
+  const [err, feed] = WXU.check_feed_existing();
+  if (err) return;
+  const payload = { ...feed };
+  payload.mp3 = !!mp3;
+  payload.original_url = feed.url;
+  payload.target_spec = spec;
+  payload.source_url = location.href;
+  WXU.log({
+    msg: `${payload.source_url}
+${payload.original_url}
+${payload.key || ""}`,
+  });
+  WXU.emit(WXU.Events.BeforeDownloadMedia, payload);
+  var suffix = ".mp4";
+  if (mp3) {
+    suffix = ".mp3";
+  }
+  if (payload.type === "picture") {
+    suffix = ".zip";
+  }
+  __wx_channels_download4(payload, { spec, suffix });
+}
+/** 下载已加载的视频 */
+function __wx_channels_download_cur__() {
+  const [err, profile] = WXU.check_feed_existing();
+  if (err) return;
+  if (__wx_channels_store__.buffers.length === 0) {
+    WXU.error({ msg: "没有可下载的内容" });
+    return;
+  }
+  var filename = WXU.build_filename(
+    profile,
+    null,
+    WXU.config.downloadFilenameTemplate,
+  );
+  if (!filename) {
+    WXU.error({ msg: "文件名生成失败" });
+    return;
+  }
+  profile.filename = filename;
+  profile.data = __wx_channels_store__.buffers;
+  __wx_channels_download(profile);
+}
 
 var __wx_channels_spec_size_cache__ = {};
 var __wx_channels_spec_size_pending__ = {};
 var __wx_channels_spec_size_failed_at__ = {};
 var __wx_channels_spec_size_retry_interval_ms__ = 30 * 1000;
 
+function __wx_channels_get_spec_file_format(spec) {
+  if (!spec) {
+    return null;
+  }
+  if (typeof spec === "string") {
+    return spec;
+  }
+  return spec.fileFormat || null;
+}
+
 function __wx_channels_build_media_url_with_spec(url, spec) {
-  if (!url || !spec) {
+  var file_format = __wx_channels_get_spec_file_format(spec);
+  if (!url || !file_format) {
     return url;
   }
   try {
     const u = new URL(url);
-    u.searchParams.set("X-snsvideoflag", spec);
+    u.searchParams.set("X-snsvideoflag", file_format);
     return u.toString();
   } catch (err) {
-    // 兜底处理，保证在 URL 解析失败时仍能拼接
     var sep = url.includes("?") ? "&" : "?";
     if (url.includes("X-snsvideoflag=")) {
-      return url.replace(/([?&]X-snsvideoflag=)[^&]*/, `$1${spec}`);
+      return url.replace(/([?&]X-snsvideoflag=)[^&]*/, `$1${file_format}`);
     }
-    return `${url}${sep}X-snsvideoflag=${spec}`;
+    return `${url}${sep}X-snsvideoflag=${file_format}`;
   }
 }
 
 function __wx_channels_get_spec_size_cache_key(profile, spec) {
   var profile_key = profile.id || profile.nonce_id || profile.url || "";
-  var spec_key = spec && spec.fileFormat ? String(spec.fileFormat) : "unknown";
+  var spec_key = __wx_channels_get_spec_file_format(spec) || "unknown";
   return `${profile_key}::${spec_key}`;
 }
 
@@ -1414,7 +2093,8 @@ function __wx_channels_build_spec_menu_title(profile, spec) {
 }
 
 async function __wx_channels_fetch_spec_size(profile, spec) {
-  if (!profile || !profile.url || !spec || !spec.fileFormat) {
+  var file_format = __wx_channels_get_spec_file_format(spec);
+  if (!profile || !profile.url || !file_format) {
     return 0;
   }
   var key = __wx_channels_get_spec_size_cache_key(profile, spec);
@@ -1428,7 +2108,10 @@ async function __wx_channels_fetch_spec_size(profile, spec) {
     return exact_size;
   }
   var failed_at = Number(__wx_channels_spec_size_failed_at__[key] || 0);
-  if (failed_at && Date.now() - failed_at < __wx_channels_spec_size_retry_interval_ms__) {
+  if (
+    failed_at &&
+    Date.now() - failed_at < __wx_channels_spec_size_retry_interval_ms__
+  ) {
     return 0;
   }
   if (__wx_channels_spec_size_pending__[key]) {
@@ -1437,7 +2120,7 @@ async function __wx_channels_fetch_spec_size(profile, spec) {
   __wx_channels_spec_size_pending__[key] = (async () => {
     var media_url = __wx_channels_build_media_url_with_spec(
       profile.url,
-      spec.fileFormat,
+      file_format,
     );
     var size = 0;
     var [head_err, head_resp] = await WXU.fetch(media_url, {
@@ -1470,73 +2153,21 @@ async function __wx_channels_fetch_spec_size(profile, spec) {
   return __wx_channels_spec_size_pending__[key];
 }
 
-/**
- * 所有下载功能统一先调用该方法
- * 由该方法分发到具体的 download 方法中
- * @param {string | null} spec 规格信息
- * @param {boolean} mp3 是否转换为 MP3
- */
-async function __wx_channels_handle_click_download__(spec, mp3) {
-  const [err, feed] = WXU.check_feed_existing();
-  if (err) return;
-  const payload = { ...feed };
-  payload.mp3 = !!mp3;
-  payload.original_url = feed.url;
-  payload.target_spec = spec;
-  payload.source_url = location.href;
-  WXU.log({
-    msg: `${payload.source_url}
-${payload.original_url}
-${payload.key || ""}`,
-  });
-  WXU.emit(WXU.Events.BeforeDownloadMedia, payload);
-  var suffix = ".mp4";
-  if (mp3) {
-    suffix = ".mp3";
-  }
-  if (payload.type === "picture") {
-    suffix = ".zip";
-  }
-  __wx_channels_download4(payload, { spec, suffix });
-}
-/** 下载已加载的视频 */
-function __wx_channels_download_cur__() {
-  const [err, profile] = WXU.check_feed_existing();
-  if (err) return;
-  if (__wx_channels_store__.buffers.length === 0) {
-    WXU.error({ msg: "没有可下载的内容" });
-    return;
-  }
-  var filename = WXU.build_filename(
-    profile,
-    null,
-    WXU.config.downloadFilenameTemplate,
-  );
-  if (!filename) {
-    WXU.error({ msg: "文件名生成失败" });
-    return;
-  }
-  profile.filename = filename;
-  profile.data = __wx_channels_store__.buffers;
-  __wx_channels_download(profile);
-}
-/** 下载命令 */
+/** 打印下载命令 */
 function __wx_channels_handle_print_download_command(spec) {
   const [err, profile] = WXU.check_feed_existing();
   if (err) return;
-  var target_url = (() => {
-    if (spec) {
-      return __wx_channels_build_media_url_with_spec(profile.url, spec);
-    }
-    return profile.url;
-  })();
+  var file_format = __wx_channels_get_spec_file_format(spec);
+  var target_url = file_format
+    ? __wx_channels_build_media_url_with_spec(profile.url, file_format)
+    : profile.url;
   if (!target_url) {
     WXU.error({ msg: "当前内容不支持下载命令" });
     return;
   }
   var filename = WXU.build_filename(
     profile,
-    spec || null,
+    file_format,
     WXU.config.downloadFilenameTemplate,
   );
   if (!filename) {
@@ -1596,182 +2227,240 @@ async function __wx_channels_handle_download_cover() {
   const blob = await response.blob();
   WXU.save(blob, filename + ".jpg");
 }
+
+function __wx_download_menu_label(label) {
+  if (typeof Node !== "undefined" && label instanceof Node) {
+    return label.textContent || "";
+  }
+  return label == null ? "" : String(label);
+}
+
+function __wx_download_menu_click_payload(trigger) {
+  const [err, profile] = WXU.check_feed_existing({
+    silence: true,
+  });
+  return {
+    profile: err ? null : profile,
+    trigger,
+  };
+}
+
+function __wx_create_timeless_download_menu_item(options, trigger, close) {
+  return new Timeless.ui.MenuItemCore({
+    label: __wx_download_menu_label(options.label),
+    tooltip: options.title,
+    disabled: !!options.disabled,
+    async onClick() {
+      if (typeof options.onClick === "function") {
+        await options.onClick(__wx_download_menu_click_payload(trigger));
+      }
+      close();
+    },
+  });
+}
+
+function __wx_render_extra_download_dropdown_items(items, trigger, close) {
+  return (items || [])
+    .filter((item) => {
+      return item.label && item.onClick;
+    })
+    .map((item) => {
+      return __wx_create_timeless_download_menu_item(item, trigger, close);
+    });
+}
+
 /**
  * 为指定按钮添加额外的下载选项菜单
  * @param {HTMLElement} trigger
  */
 function __wx_attach_download_dropdown_menu(trigger) {
-  const { DropdownMenu, Menu, MenuItem } = WUI;
-  const download_submenu$ = Menu({
-    children: [],
+  if (trigger.__wxTimelessDownloadDropdown) {
+    return trigger.__wxTimelessDownloadDropdown;
+  }
+
+  const download_submenu$ = new Timeless.ui.MenuCore({
+    items: [],
+    trigger: "hover",
   });
-  const command_submenu$ = Menu({
-    children: [],
+  const command_submenu$ = new Timeless.ui.MenuCore({
+    items: [],
+    trigger: "hover",
   });
-  var hover_token = 0;
-  const dropdown$ = DropdownMenu({
-    $trigger: trigger,
-    zIndex: 99999,
-    children: [
-      ...(() => {
-        if (WXU.before_menu_items) {
-          return render_extra_menu_items(WXU.before_menu_items, {
-            hide() {
-              dropdown$.hide();
-            },
-          });
-        }
-        return [];
-      })(),
-      MenuItem({
+  let hover_token = 0;
+  let dropdown$ = null;
+
+  function close_dropdown() {
+    download_submenu$.hide({ reason: "download menu action" });
+    command_submenu$.hide({ reason: "download menu action" });
+    if (dropdown$) {
+      dropdown$.hide({ reason: "download menu action" });
+    }
+  }
+
+  function get_profile_specs(profile) {
+    return Array.isArray(profile && profile.spec)
+      ? profile.spec.filter((item) => item && item.fileFormat)
+      : [];
+  }
+
+  function build_root_menu_items() {
+    return [
+      ...__wx_render_extra_download_dropdown_items(
+        WXU.before_menu_items,
+        trigger,
+        close_dropdown,
+      ),
+      new Timeless.ui.MenuItemCore({
         label: "更多下载",
-        submenu: download_submenu$,
-        onMouseEnter() {
-          download_submenu$.show();
-        },
-        onMouseLeave() {
-          if (!download_submenu$.isHover) {
-            download_submenu$.hide();
-          }
-        },
+        menu: download_submenu$,
       }),
-      MenuItem({
+      new Timeless.ui.MenuItemCore({
         label: "下载命令",
-        submenu: command_submenu$,
-        onMouseEnter() {
-          command_submenu$.show();
-        },
-        onMouseLeave() {
-          if (!command_submenu$.isHover) {
-            command_submenu$.hide();
-          }
-        },
+        menu: command_submenu$,
       }),
-      MenuItem({
+      new Timeless.ui.MenuItemCore({
         label: "下载为MP3",
         onClick() {
           __wx_channels_handle_click_download__(null, true);
-          dropdown$.hide();
+          close_dropdown();
         },
       }),
-      MenuItem({
+      new Timeless.ui.MenuItemCore({
         label: "下载封面",
         onClick() {
           __wx_channels_handle_download_cover();
-          dropdown$.hide();
+          close_dropdown();
         },
       }),
-      MenuItem({
+      new Timeless.ui.MenuItemCore({
         label: "复制页面链接",
         onClick() {
           __wx_channels_handle_copy__();
-          dropdown$.hide();
+          close_dropdown();
         },
       }),
-      ...(() => {
-        if (WXU.after_menu_items) {
-          return render_extra_menu_items(WXU.after_menu_items, {
-            hide() {
-              dropdown$.hide();
-            },
-          });
-        }
-        return [];
-      })(),
-    ],
-    onMouseEnter() {
-      if (download_submenu$.isOpen) {
-        download_submenu$.hide();
-      }
-      if (command_submenu$.isOpen) {
-        command_submenu$.hide();
-      }
-    },
+      ...__wx_render_extra_download_dropdown_items(
+        WXU.after_menu_items,
+        trigger,
+        close_dropdown,
+      ),
+    ];
+  }
+
+  function build_download_menu_items(profile) {
+    var specs = get_profile_specs(profile);
+    return [
+      new Timeless.ui.MenuItemCore({
+        label: "原始视频",
+        onClick() {
+          __wx_channels_handle_click_download__(null);
+          close_dropdown();
+        },
+      }),
+      ...specs.map((spec) => {
+        return new Timeless.ui.MenuItemCore({
+          label: __wx_channels_build_spec_menu_label(profile, spec),
+          tooltip: __wx_channels_build_spec_menu_title(profile, spec),
+          onClick() {
+            __wx_channels_handle_click_download__(spec.fileFormat);
+            close_dropdown();
+          },
+        });
+      }),
+    ];
+  }
+
+  function build_command_menu_items(profile) {
+    if (!profile || !profile.url) {
+      return [];
+    }
+    var specs = get_profile_specs(profile);
+    if (specs.length === 0) {
+      return [
+        new Timeless.ui.MenuItemCore({
+          label: "当前规格",
+          onClick() {
+            __wx_channels_handle_print_download_command(null);
+            close_dropdown();
+          },
+        }),
+      ];
+    }
+    return specs.map((spec) => {
+      return new Timeless.ui.MenuItemCore({
+        label: __wx_channels_build_spec_menu_label(profile, spec),
+        tooltip: __wx_channels_build_spec_menu_title(profile, spec),
+        onClick() {
+          __wx_channels_handle_print_download_command(spec.fileFormat);
+          close_dropdown();
+        },
+      });
+    });
+  }
+
+  function refresh_dynamic_menu_items(profile) {
+    download_submenu$.setItems(build_download_menu_items(profile));
+    command_submenu$.setItems(build_command_menu_items(profile));
+  }
+
+  dropdown$ = new Timeless.ui.DropdownMenuCore({
+    trigger: "hover",
+    align: "end",
+    items: build_root_menu_items(),
   });
-  dropdown$.ui.$trigger.onMouseEnter(() => {
+
+  const mount = document.createElement("span");
+  mount.className = "wx-download-dropdown-menu-root";
+  mount.style.display = "contents";
+  document.body.appendChild(mount);
+  Timeless.DOM.render(Timeless.shadcn.DropdownMenu({ store: dropdown$ }), mount);
+
+  function set_reference() {
+    dropdown$.setReference(
+      {
+        $el: trigger,
+        getRect() {
+          return trigger.getBoundingClientRect();
+        },
+      },
+      { force: true },
+    );
+  }
+
+  trigger.addEventListener("mouseenter", () => {
+    set_reference();
     var current_hover_token = ++hover_token;
     const [err, profile] = WXU.check_feed_existing({
       silence: true,
     });
-    if (err) {
-      download_submenu$.setChildren([]);
-      command_submenu$.setChildren([]);
-      dropdown$.show();
-      return;
-    }
-    var specs = Array.isArray(profile.spec)
-      ? profile.spec.filter((item) => item && item.fileFormat)
-      : [];
-    if (specs.length === 0) {
-      download_submenu$.setChildren([
-        MenuItem({
-          label: "当前规格",
-          onClick() {
-            __wx_channels_handle_click_download__(null);
-            dropdown$.hide();
-          },
+    refresh_dynamic_menu_items(err ? null : profile);
+    if (!err) {
+      var specs = get_profile_specs(profile);
+      Promise.all(
+        specs.map((spec) => {
+          return __wx_channels_fetch_spec_size(profile, spec);
         }),
-      ]);
-      command_submenu$.setChildren(
-        profile.url
-          ? [
-              MenuItem({
-                label: "当前规格",
-                onClick() {
-                  __wx_channels_handle_print_download_command(null);
-                  dropdown$.hide();
-                },
-              }),
-            ]
-          : [],
-      );
-      dropdown$.show();
-      return;
+      )
+        .then(() => {
+          if (current_hover_token === hover_token) {
+            refresh_dynamic_menu_items(profile);
+          }
+        })
+        .catch(() => {});
     }
-    const render_spec_submenus = () => {
-      var download_menus = specs.map((spec) => {
-        return MenuItem({
-          label: __wx_channels_build_spec_menu_label(profile, spec),
-          title: __wx_channels_build_spec_menu_title(profile, spec),
-          onClick() {
-            __wx_channels_handle_click_download__(spec.fileFormat);
-            dropdown$.hide();
-          },
-        });
-      });
-      var command_menus = specs.map((spec) => {
-        return MenuItem({
-          label: __wx_channels_build_spec_menu_label(profile, spec),
-          title: __wx_channels_build_spec_menu_title(profile, spec),
-          onClick() {
-            __wx_channels_handle_print_download_command(spec.fileFormat);
-            dropdown$.hide();
-          },
-        });
-      });
-      download_submenu$.setChildren(download_menus);
-      command_submenu$.setChildren(command_menus);
-    };
-    var size_fetching = Promise.all(
-      specs.map((spec) => {
-        return __wx_channels_fetch_spec_size(profile, spec);
-      }),
-    );
-    render_spec_submenus();
-    size_fetching.then(() => {
-      if (current_hover_token !== hover_token) {
-        return;
-      }
-      render_spec_submenus();
-    });
-    dropdown$.show();
+    dropdown$.handleEnterTrigger();
   });
-  dropdown$.ui.$trigger.onMouseLeave(() => {
-    if (dropdown$.isHover) {
-      return;
-    }
-    dropdown$.hide();
+  trigger.addEventListener("mouseleave", () => {
+    dropdown$.handleLeaveTrigger();
   });
+  trigger.addEventListener("pointerdown", (event) => {
+    event.stopPropagation();
+  });
+
+  if (trigger.dataset) {
+    trigger.dataset.dropdownMenuImpl = "Timeless.shadcn.DropdownMenu";
+  }
+  trigger.__wxTimelessDownloadDropdown = dropdown$;
   return dropdown$;
 }
 
@@ -1791,364 +2480,40 @@ function __wx_download_btn_handler() {
   __wx_channels_handle_click_download__(spec, false);
 }
 
-if (typeof window.Timeless !== undefined) {
-  Object.assign(Timeless, Timeless.kit);
-  Object.assign(Timeless, Timeless.headless);
+if (typeof window.Timeless !== "undefined") {
+  const timeless = window.Timeless;
+  Object.assign(timeless, timeless.kit);
+  Object.assign(timeless, timeless.headless);
   // Rendering
-  window.h = Timeless.h;
-  window.View = Timeless.View;
-  window.Fragment = Timeless.Fragment;
+  window.h = timeless.h;
+  window.View = timeless.View;
+  window.Fragment = timeless.Fragment;
   // Control flow
-  window.Show = Timeless.Show;
-  window.For = Timeless.For;
-  window.Switch = Timeless.Switch;
-  window.Match = Timeless.Match;
+  window.Show = timeless.Show;
+  window.For = timeless.For;
+  window.Switch = timeless.Switch;
+  window.Match = timeless.Match;
   // Reactivity
-  window.ref = Timeless.ref;
-  window.refobj = Timeless.refobj;
-  window.refarr = Timeless.refarr;
-  window.computed = Timeless.computed;
-  window.combine = Timeless.combine;
-  window.isElement = Timeless.isElement;
+  window.ref = timeless.ref;
+  window.refobj = timeless.refobj;
+  window.refarr = timeless.refarr;
+  window.computed = timeless.computed;
+  window.combine = timeless.combine;
+  window.isElement = timeless.isElement;
   // Styling
-  window.cn = Timeless.cn;
-  window.classNames = Timeless.classNames;
+  window.cn = timeless.cn;
+  window.classNames = timeless.classNames;
   // Primitives
-  window.PopoverPrimitive = Timeless.PopoverPrimitive;
-  window.DropdownMenuPrimitive = Timeless.DropdownMenuPrimitive;
-  window.WaterfallPrimitive = Timeless.WaterfallPrimitive;
-  window.ScrollViewPrimitive = Timeless.ScrollViewPrimitive;
-  window.DialogPrimitive = Timeless.DialogPrimitive;
+  window.PopoverPrimitive = timeless.PopoverPrimitive;
+  window.DropdownMenuPrimitive = timeless.DropdownMenuPrimitive;
+  window.WaterfallPrimitive = timeless.WaterfallPrimitive;
+  window.ScrollViewPrimitive = timeless.ScrollViewPrimitive;
+  window.DialogPrimitive = timeless.DialogPrimitive;
   // SVG helpers
-  window.SVG = Timeless.SVG;
-  window.Circle = Timeless.Circle;
-  // HTML injection
-  window.DangerouslyInnerHTML = Timeless.DangerouslyInnerHTML;
-}
-
-var FakeAPIServerAddr = WXU.config.remoteServerEnabled
-  ? FakeRemoteAPIServerAddr
-  : FakeLocalAPIServerAddr;
-var APIServerProtocol = WXU.config.remoteServerEnabled
-  ? FakeRemoteAPIServerProtocol
-  : FakeLocalAPIServerProtocol;
-
-function ChannelsWebsocketClient() {
-  const methods = {
-    connect_local_ws() {
-      const ws_url =
-        WSServerProtocol + "://" + FakeLocalAPIServerAddr + "/ws/channels";
-      const ws = new WebSocket(ws_url);
-      ws.onclose = (e) => {
-        WXU.error({ msg: "channels ws连接已关闭，" + JSON.stringify(e) });
-      };
-      ws.onerror = (e) => {
-        WXU.error({ msg: "channels ws连接发生错误，" + JSON.stringify(e) });
-      };
-      ws.onmessage = (ev) => {
-        const [err, msg] = WXU.parseJSON(ev.data);
-        if (err) {
-          return;
-        }
-        if (msg.type === "api_call") {
-          this.__wx_handle_api_call(msg.data, ws);
-        }
-      };
-    },
-    async __wx_handle_api_call(msg, socket) {
-      var { id, key, data } = msg;
-      console.log("[DOWNLOADER]__wx_handle_api_call", id, key, data);
-      function resp(body) {
-        socket.send(
-          JSON.stringify({
-            id,
-            data: body,
-          }),
-        );
-      }
-      if (key === "key:channels:contact_list") {
-        let payload = {
-          query: data.keyword,
-          scene: 13,
-          lastBuff: data.next_marker
-            ? decodeURIComponent(data.next_marker)
-            : "",
-          requestId: String(new Date().valueOf()),
-        };
-        var r = await WXU.API2.finderSearch(payload);
-        console.log("[DOWNLOADER]finderSearch", r, payload);
-        /** @type {SearchResp} */
-        var { infoList, objectList } = r.data;
-        resp({
-          ...r,
-          payload,
-        });
-        return;
-      }
-      if (key === "key:channels:feed_list") {
-        let payload = {
-          username: data.username,
-          finderUsername: __wx_username,
-          lastBuffer: data.next_marker
-            ? decodeURIComponent(data.next_marker)
-            : "",
-          needFansCount: 0,
-          objectId: "0",
-        };
-        let r = await WXU.API.finderUserPage(payload);
-        console.log("[DOWNLOADER]finderUserPage", r);
-        /** @type {ChannelsObject[]} */
-        const object = r.data.object || [];
-        resp({
-          ...r,
-          payload,
-        });
-        return;
-      }
-      if (key === "key:channels:live_replay_list") {
-        let payload = {
-          username: data.username,
-          finderUsername: __wx_username || data.username,
-          lastBuffer: data.next_marker
-            ? decodeURIComponent(data.next_marker)
-            : "",
-          needFansCount: 0,
-          objectId: "0",
-        };
-        var r = await WXU.API3.finderLiveUserPage(payload);
-        console.log("[DOWNLOADER]finderLiveUserPage", r);
-        resp({
-          ...r,
-          payload,
-        });
-        return;
-      }
-      if (key === "key:channels:interactioned_list") {
-        let payload = {
-          lastBuffer: data.next_marker
-            ? decodeURIComponent(data.next_marker)
-            : "",
-          tabFlag: data.flag ? Number(data.flag) : 7,
-        };
-        var r = await WXU.API4.finderGetInteractionedFeedList(payload);
-        console.log("[DOWNLOADER]finderGetInteractionedFeedList", r);
-        resp({
-          ...r,
-          payload,
-        });
-        return;
-      }
-      async function fetchFeedProfileWith(data) {
-        if (data.url) {
-          var u = new URL(decodeURIComponent(data.url));
-          data.oid = WXU.API.decodeBase64ToUint64String(
-            u.searchParams.get("oid"),
-          );
-          data.nid = WXU.API.decodeBase64ToUint64String(
-            u.searchParams.get("nid"),
-          );
-        }
-        let payload = {
-          needObject: 1,
-          lastBuffer: "",
-          scene: data.eid ? 141 : 146,
-          direction: 2,
-          identityScene: 2,
-          pullScene: 6,
-          objectid: (() => {
-            if (data.eid) {
-              return undefined;
-            }
-            if (data.oid.includes("_")) {
-              return data.oid.split("_")[0];
-            }
-            return data.oid;
-          })(),
-          objectNonceId: data.eid ? undefined : data.nid,
-          encrypted_objectid: data.eid || "",
-        };
-        if (data.eid) {
-          payload.traceBuffer = undefined;
-        }
-        var r = await WXU.API.finderGetCommentDetail(payload);
-        return r;
-      }
-      if (key === "key:channels:feed_profile") {
-        console.log("before finderGetCommentProfile", data);
-        try {
-          var r = await fetchFeedProfileWith(data);
-          /** @type {MediaProfileResp} */
-          var { object } = r.data;
-          resp({
-            ...r,
-            payload,
-          });
-          return;
-        } catch (err) {
-          resp({
-            errCode: 1011,
-            errMsg: err.message,
-            payload: null,
-          });
-          return;
-        }
-      }
-      if (key === "key:channels:shared_feed_profile") {
-        console.log("before getFeedInfo", data);
-        function getShortUri(data) {
-          var u = new URL(decodeURIComponent(data.url));
-          var pathname = u.pathname;
-          var m = pathname.match(/\/sph\/([a-zA-Z0-9]{1,})/);
-          if (m) {
-            return m[1];
-          }
-          return u.searchParams.get("id");
-        }
-        try {
-          if (!data.url) {
-            resp({
-              errCode: 1011,
-              errMsg: "missing url",
-              payload: null,
-            });
-            return;
-          }
-          var uri = getShortUri(data);
-          if (!uri) {
-            resp({
-              errCode: 1011,
-              errMsg: "can't get the uri from url, " + data.url,
-              payload: null,
-            });
-            return;
-          }
-          console.log("[]WXU.API5", WXU.API5, uri);
-          await WXU.load_script(__wx_assets_base + "/lib/merlin.js");
-          if (typeof WXAPI5.getFeedInfo !== "function") {
-            resp({
-              errCode: 1011,
-              errMsg: "the getFeedInfo is not a function",
-              payload: null,
-            });
-            return;
-          }
-          var payload = {
-            baseReq: {
-              generalToken: "",
-            },
-            shortUri: uri,
-          };
-          /** @type {SharedFeedProfileResp} */
-          var shared = await WXAPI5.getFeedInfo(payload);
-          if (!shared.data.sceneInfo.dynamicExportId) {
-            resp({
-              errCode: 1011,
-              errMsg: "getFeedInfo failed, missing 'sceneInfo.dynamicExportId'",
-              payload: null,
-            });
-            return;
-          }
-          var r = await fetchFeedProfileWith({
-            eid: shared.data.sceneInfo.dynamicExportId,
-          });
-          var { object } = r.data;
-          resp({
-            ...r,
-            payload,
-          });
-          return;
-        } catch (err) {
-          resp({
-            errCode: 1011,
-            errMsg: err.message,
-            payload: null,
-          });
-          return;
-        }
-      }
-      if (key === "key:channels:fetch_feed_comment_list") {
-        // console.log("[DOWNLOADER]key:channels:fetch_feed_comment_list");
-        if (!data.oid) {
-          resp({
-            errCode: 1011,
-            errMsg: "missing oid",
-            payload: null,
-          });
-          return;
-        }
-        if (!data.nid && !data.comment_id) {
-          resp({
-            errCode: 1011,
-            errMsg: "missing nid or comment_id",
-            payload: null,
-          });
-          return;
-        }
-        try {
-          var payload = data.comment_id
-            ? {
-                direction: 2,
-                identityScene: 2,
-                objectId: data.oid,
-                lastBuffer:
-                  data.next_marker === "" ? undefined : data.next_marker,
-                rootCommentId: data.comment_id,
-              }
-            : {
-                finderBasereq: {
-                  scene: 140,
-                  ctxInfo: {
-                    clientReportBuff: '{"entranceId":"1002"}',
-                  },
-                  objectBaseInfos: [],
-                },
-                objectId: data.oid,
-                direction: 2,
-                objectNonceId: data.nid,
-                identityScene: 2,
-                lastBuffer:
-                  data.next_marker === "" ? undefined : data.next_marker,
-                enterSessionId: String(Date.now()),
-              };
-          var r = await WXU.API.finderGetCommentList(payload);
-          resp({
-            ...r,
-            payload,
-          });
-        } catch (err) {
-          resp({
-            errCode: 1011,
-            errMsg: err.message,
-            payload: null,
-          });
-        }
-        return;
-      }
-      if (key === "key:channels:reload") {
-        console.log("[DOWNLOADER]reloading page");
-        resp({
-          msg: "reloading",
-        });
-        setTimeout(() => {
-          window.location.reload();
-        }, 500);
-        return;
-      }
-      resp({
-        errCode: 1000,
-        errMsg: "未匹配的key",
-        payload: msg,
-      });
-    },
-  };
-  return {
-    methods,
-  };
+  window.SVG = timeless.SVG;
+  window.Circle = timeless.Circle;
 }
 
 WXU.onInit((data) => {
   __wx_username = data.mainFinderUsername;
 });
-
-const ws_client$ = ChannelsWebsocketClient();
-ws_client$.methods.connect_local_ws();

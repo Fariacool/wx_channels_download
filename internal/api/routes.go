@@ -9,6 +9,9 @@ import (
 func (c *APIClient) SetupRoutes() {
 	// favicon
 	c.engine.GET("/favicon.ico", c.handleFavicon)
+	c.setupStaticAssetRoutes()
+	c.engine.GET("/", c.handleIndex)
+	c.engine.GET("/download", c.handleDownloadPage)
 	// 只在本地有的接口
 	if !c.cfg.RemoteServerMode {
 		// 视频号接口
@@ -17,8 +20,10 @@ func (c *APIClient) SetupRoutes() {
 		c.engine.GET("/api/channels/feed/profile", c.handleFetchFeedProfile)
 		c.engine.GET("/api/channels/live/replay/list", c.handleFetchLiveReplayList)
 		c.engine.GET("/api/channels/interactioned/list", c.handleFetchInteractionedFeedList)
+		c.engine.GET("/api/channels/follow/list", c.handleFetchFollowList)
 		c.engine.GET("/api/channels/shared_feed/profile", c.handleFetchSharedFeedProfile)
 		c.engine.GET("/api/channels/feed/comment/list", c.handleFetchFeedCommentList)
+		c.engine.GET("/api/channels/feed/share_url", c.handleFetchFeedShareUrl)
 		c.engine.GET("/rss/channels", c.handleFetchFeedListOfContactRSS)
 		// 公众号接口
 		c.engine.GET("/ws/mp", c.official.HandleWebsocket)
@@ -38,6 +43,7 @@ func (c *APIClient) SetupRoutes() {
 		c.engine.POST("/api/filehelper/parse_finder_feed", c.filehelper.HandleParseFinderFeed)
 		// 文件操作
 		c.engine.POST("/api/show_file", c.handleHighlightFileInFolder)
+		c.engine.POST("/api/open_file", c.handleHighlightFileInFolder)
 		c.engine.POST("/api/open_download_dir", c.handleOpenDownloadDir)
 	}
 	// 下载任务接口
@@ -51,7 +57,9 @@ func (c *APIClient) SetupRoutes() {
 	// c.engine.POST("/api/task/create_live", c.handleCreateLiveTask)
 	c.engine.POST("/api/task/create2", c.handleCreateDownloadTask)
 	c.engine.POST("/api/task/start", c.handleStartTask)
+	c.engine.POST("/api/task/start_all", c.handleStartAllTasks)
 	c.engine.POST("/api/task/pause", c.handlePauseTask)
+	c.engine.POST("/api/task/pause_all", c.handlePauseAllTasks)
 	c.engine.POST("/api/task/resume", c.handleResumeTask)
 	c.engine.POST("/api/task/delete", c.handleDeleteTask)
 	c.engine.POST("/api/task/clear", c.handleClearTasks)
@@ -69,6 +77,8 @@ func (c *APIClient) SetupRoutes() {
 	c.engine.GET("/rss/mp", c.official.HandleOfficialAccountRSS)
 	c.engine.GET("/mp/proxy", c.official.HandleOfficialAccountProxy)
 	c.engine.GET("/mp/home", c.official.HandleOfficialAccountManagerHome)
+	// sph 接口
+	c.engine.GET("/api/channels/parse_sph", c.handleParseSph)
 	// 其他
 	c.engine.GET("/api/status", c.handleStatus)
 	// c.engine.GET("/api/test", c.handleTest)
@@ -82,7 +92,7 @@ func (c *APIClient) SetupRoutes() {
 func (c *APIClient) handleFavicon(ctx *gin.Context) {
 	ctx.Header("Content-Type", "image/png")
 	ctx.Header("Cache-Control", "public, max-age=86400")
-	ctx.File("winres/icon.png")
+	ctx.File("build/winres/icon.png")
 }
 
 func (c *APIClient) handleStatus(ctx *gin.Context) {

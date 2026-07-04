@@ -42,10 +42,12 @@ var (
 	jsUserFeedsReg                      = regexp.MustCompile(`async finderUserPage\((\w+)\)\{(.*?)\}async`)
 	jsFinderPCSearchReg                 = regexp.MustCompile(`async finderPCSearch\((\w+)\)\{(.*?)\}async`)
 	jsFinderSearchReg                   = regexp.MustCompile(`async finderSearch\((\w+)\)\{(.*?)\}async`)
+	jsFinderGetFollowListReg            = regexp.MustCompile(`async finderGetFollowList\((\w+)\)\{(.*?)\}async`)
 	jsFinderGetInteractionedFeedListReg = regexp.MustCompile(`async finderGetInteractionedFeedList\((\w+)\)\{(.*?)\}\}const`)
-	jsGoToPrevFlowReg                   = regexp.MustCompile(`goToPrevFlowFeed:([a-zA-Z]{1,})`)
-	jsGoToNextFlowReg                   = regexp.MustCompile(`goToNextFlowFeed:([a-zA-Z]{1,})`)
-	jsFlowTabReg                        = regexp.MustCompile(`flowTab:([a-zA-Z]{1,})`)
+	jsFinderGetFeedH5Url                = regexp.MustCompile(`async finderGetFeedH5Url\((\w+)\)\{(.*?)\}\}const`)
+	jsGoToPrevFlowReg                   = regexp.MustCompile(`goToPrevFlowFeed:([a-zA-Z_$]{1,})`)
+	jsGoToNextFlowReg                   = regexp.MustCompile(`goToNextFlowFeed:([a-zA-Z_$]{1,})`)
+	jsFlowTabReg                        = regexp.MustCompile(`flowTab:([a-zA-Z_$]{1,})`)
 	jsLocalFlowTabReg                   = regexp.MustCompile(`localFlowTab:([a-zA-Z]{1,})`)
 	jsLoadLocalPlaylistReg              = regexp.MustCompile(`loadLocalPlaylist:([a-zA-Z]{1,})`)
 )
@@ -54,27 +56,13 @@ func CreateChannelInterceptorPlugins(interceptor *Interceptor, files *ChannelInj
 	version := interceptor.Version
 	cfg := interceptor.Settings
 	variables := interceptor.FrontendVariables
+	assetBaseURL := ChannelAssetsSameOriginBaseURL()
 	v := "?t=" + version
 	plugin1 := &proxy.Plugin{
 		Match: "channels.weixin.qq.com",
 		OnRequest: func(ctx proxy.Context) {
 			pathname := ctx.Req().URL.Path
-			if strings.Contains(pathname, "jszip.min") {
-				ctx.Mock(200, map[string]string{
-					"Content-Type": "application/javascript",
-				}, string(files.JSZip))
-				return
-			}
-			if strings.Contains(pathname, "FileSaver.min") {
-				ctx.Mock(200, map[string]string{
-					"Content-Type": "application/javascript",
-				}, string(files.JSFileSaver))
-				return
-			}
-			if strings.Contains(pathname, "recorder.min") {
-				ctx.Mock(200, map[string]string{
-					"Content-Type": "application/javascript",
-				}, string(files.JSRecorder))
+			if mockChannelStaticAsset(ctx, pathname, files) {
 				return
 			}
 			if pathname == "/__wx_channels_api/profile" {
@@ -176,74 +164,71 @@ func CreateChannelInterceptorPlugins(interceptor *Interceptor, files *ChannelInj
 				html = scriptSrcReg.ReplaceAllString(html, `src="$1.js`+v+`"`)
 				html = scriptHrefReg.ReplaceAllString(html, `href="$1.js`+v+`"`)
 
-				inserted_scripts := ""
+				var injected strings.Builder
 				if cfg.DebugShowError {
 					/** 全局错误捕获并展示弹窗 */
-					script_error := fmt.Sprintf(`<script>%s</script>`, files.JSError)
-					inserted_scripts += script_error
+					AppendScriptSrcs(&injected, "", ChannelSrcAssetURL(assetBaseURL, "error.js"))
 				}
-				inserted_scripts += fmt.Sprintf(`<script>%s</script>`, files.JSMitt)
-				inserted_scripts += fmt.Sprintf(`<script>%s</script>`, files.JSTimelessReactive)
-				inserted_scripts += fmt.Sprintf(`<script>%s</script>`, files.JSTimelessUtils)
-				inserted_scripts += fmt.Sprintf(`<script>%s</script>`, files.JSTimelessUI)
-				inserted_scripts += fmt.Sprintf(`<script>%s</script>`, files.JSTimelessKit)
-				inserted_scripts += fmt.Sprintf(`<script>%s</script>`, files.JSTimelessHeadless)
-				inserted_scripts += fmt.Sprintf(`<script>%s</script>`, files.JSTimelessIcons)
-				inserted_scripts += fmt.Sprintf(`<script>%s</script>`, files.JSTimelessProviderWeb)
-				inserted_scripts += fmt.Sprintf(`<script>%s</script>`, files.JSFloatingUICore)
-				inserted_scripts += fmt.Sprintf(`<script>%s</script>`, files.JSFloatingUIDOM)
-				inserted_scripts += fmt.Sprintf(`<style>%s</style>`, files.CSSWeui)
-				inserted_scripts += fmt.Sprintf(`<script>%s</script>`, files.JSWeui)
-				inserted_scripts += fmt.Sprintf(`<script>%s</script>`, files.JSWui)
+				var shadcnCSS []byte
+				if files != nil {
+					shadcnCSS = files.CSSTimelessShadcn
+				}
+				AppendSharedLibAssetsWithInlineShadcnCSS(&injected, assetBaseURL, version, "", "", shadcnCSS)
+				AppendStylesheetHrefs(&injected, "", ChannelSrcAssetURL(assetBaseURL, "components.css"))
 				cfg_byte, _ := json.Marshal(cfg)
-				script_config := fmt.Sprintf(`<script>var __wx_channels_config__ = %s; var __wx_channels_version__ = "%s";</script>`, string(cfg_byte), version)
-				inserted_scripts += script_config
+				AppendInlineScript(&injected, "", fmt.Sprintf(`var __wx_channels_config__ = %s; var __wx_channels_version__ = "%s";`, string(cfg_byte), version))
+				AppendInlineScript(&injected, "", fmt.Sprintf(`window.__wx_channels_env__ = Object.assign(window.__wx_channels_env__ || {}, { assetsBaseURL: %q });`, assetBaseURL))
 				variable_byte, _ := json.Marshal(variables)
-				script_variable := fmt.Sprintf(`<script>var WXVariable = %s;</script>`, string(variable_byte))
-				inserted_scripts += script_variable
-				inserted_scripts += fmt.Sprintf(`<script>%s</script>`, files.JSEventBus)
-				inserted_scripts += fmt.Sprintf(`<script>%s</script>`, files.JSUtils)
-				inserted_scripts += fmt.Sprintf(`<script>%s</script>`, files.JSComponents)
-				inserted_scripts += fmt.Sprintf(`<script>%s</script>`, files.JSDownloader)
+				AppendInlineScript(&injected, "", fmt.Sprintf(`var WXVariable = %s;`, string(variable_byte)))
+				AppendScriptSrcs(
+					&injected,
+					"",
+					ChannelSrcAssetURL(assetBaseURL, "eventbus.js"),
+					ChannelSrcAssetURL(assetBaseURL, "env.js"),
+					ChannelSrcAssetURL(assetBaseURL, "env.channels.js"),
+					ChannelSrcAssetURL(assetBaseURL, "utils.js"),
+					ChannelSrcAssetURL(assetBaseURL, "components.js"),
+					ChannelSrcAssetURL(assetBaseURL, "channels.js"),
+				)
+				AppendScriptSrcs(
+					&injected,
+					"",
+					ChannelSrcAssetURL(assetBaseURL, "download/core.js"),
+					ChannelSrcAssetURL(assetBaseURL, "download/panel.js"),
+				)
 				if cfg.InjectGlobalScript != "" {
-					inserted_scripts += fmt.Sprintf(`<script>%s</script>`, cfg.InjectGlobalScript)
+					AppendInlineScript(&injected, "", cfg.InjectGlobalScript)
 				}
 				// 必须放在 JSUtils 后面
 				if cfg.PagespyEnabled {
 					/** 在线调试 */
-					script_pagespy := fmt.Sprintf(`<script>%s</script>`, files.JSPageSpy)
-					script_debug := fmt.Sprintf(`<script>%s</script>`, files.JSDebug)
-					inserted_scripts += script_pagespy + script_debug
+					AppendScriptSrcs(&injected, "", ChannelLibAssetURL(assetBaseURL, version, "pagespy.min.js"), ChannelSrcAssetURL(assetBaseURL, "pagespy.js"))
 				}
 				if pathname == "/web/pages/home" {
-					script_main := fmt.Sprintf(`<script>%s</script>`, files.JSHomePage)
+					AppendScriptSrcs(&injected, "", ChannelSrcAssetURL(assetBaseURL, "home.js"))
 					if cfg.InjectExtraScriptAfterJSMain != "" {
-						script_main += fmt.Sprintf(`<script>%s</script>`, cfg.InjectExtraScriptAfterJSMain)
+						AppendInlineScript(&injected, "", cfg.InjectExtraScriptAfterJSMain)
 					}
-					inserted_scripts += script_main
 				}
 				if pathname == "/web/pages/feed" {
-					script_main := fmt.Sprintf(`<script>%s</script>`, files.JSFeedProfilePage)
+					AppendScriptSrcs(&injected, "", ChannelSrcAssetURL(assetBaseURL, "feed.js"))
 					if cfg.InjectExtraScriptAfterJSMain != "" {
-						script_main += fmt.Sprintf(`<script>%s</script>`, cfg.InjectExtraScriptAfterJSMain)
+						AppendInlineScript(&injected, "", cfg.InjectExtraScriptAfterJSMain)
 					}
-					inserted_scripts += script_main
 				}
 				if pathname == "/web/pages/live" {
-					script_live_main := fmt.Sprintf(`<script>%s</script>`, files.JSLiveProfilePage)
+					AppendScriptSrcs(&injected, "", ChannelSrcAssetURL(assetBaseURL, "live.js"))
 					if cfg.InjectExtraScriptAfterJSMain != "" {
-						script_live_main += fmt.Sprintf(`<script>%s</script>`, cfg.InjectExtraScriptAfterJSMain)
+						AppendInlineScript(&injected, "", cfg.InjectExtraScriptAfterJSMain)
 					}
-					inserted_scripts += script_live_main
 				}
 				if pathname == "/web/pages/profile" {
-					script_contact_main := fmt.Sprintf(`<script>%s</script>`, files.JSContactPage)
+					AppendScriptSrcs(&injected, "", ChannelSrcAssetURL(assetBaseURL, "profile.js"))
 					if cfg.InjectExtraScriptAfterJSMain != "" {
-						script_contact_main += fmt.Sprintf(`<script>%s</script>`, cfg.InjectExtraScriptAfterJSMain)
+						AppendInlineScript(&injected, "", cfg.InjectExtraScriptAfterJSMain)
 					}
-					inserted_scripts += script_contact_main
 				}
-				html = strings.Replace(html, "<head>", "<head>\n"+inserted_scripts, 1)
+				html = strings.Replace(html, "<head>", "<head>\n"+injected.String(), 1)
 				ctx.SetResponseBody(html)
 				return
 			}
@@ -360,6 +345,18 @@ func CreateChannelInterceptorPlugins(interceptor *Interceptor, files *ChannelInj
 				}async`
 						js_script = jsFinderSearchReg.ReplaceAllString(js_script, js_finder_search)
 					}
+
+					{
+						js_finder_get_follow_list := `async finderGetFollowList($1) {
+						console.log("finderGetFollowList payload", $1);
+						var result = await (async () => {
+							$2;
+						})();
+						console.log("finderGetFollowList result", result);
+						return result;
+					}async`
+						js_script = jsFinderGetFollowListReg.ReplaceAllString(js_script, js_finder_get_follow_list)
+					}
 					{
 						js_finder_interactioned := `async finderGetInteractionedFeedList($1) {
 						var result = await (async () => {
@@ -371,6 +368,18 @@ func CreateChannelInterceptorPlugins(interceptor *Interceptor, files *ChannelInj
 						return result;
 					}}const`
 						js_script = jsFinderGetInteractionedFeedListReg.ReplaceAllString(js_script, js_finder_interactioned)
+					}
+					{
+						js_finder_feed_h5_url := `async finderGetFeedH5Url($1) {
+						var result = await (async () => {
+							$2;
+						})();
+						var data = result.data.object;
+						// console.log("before finderGetFeedH5Url", result, $1);
+						WXU.emit(WXU.Events.GetFeedH5Url, data);
+						return result;
+					}}const`
+						js_script = jsFinderGetFeedH5Url.ReplaceAllString(js_script, js_finder_feed_h5_url)
 					}
 					{
 						js_user_feed := `async finderUserPage($1) {
@@ -513,11 +522,49 @@ func CreateChannelInterceptorPlugins(interceptor *Interceptor, files *ChannelInj
 	return []*proxy.Plugin{plugin1, plugin2}
 }
 
+// CreateYuanbaoTencentPlugin 拦截 yuanbao.tencent.com/api 的请求与响应，提取请求头中的 Cookie 和响应头中的 Set-Cookie 并通过回调传出。
+// 回调中的 cookieStr 是 Cookie / Set-Cookie 值。
+func CreateYuanbaoTencentPlugin(onCookieExtracted func(cookieStr string)) *proxy.Plugin {
+	isAPIPath := func(ctx proxy.Context) bool {
+		return ctx.Req().URL.Hostname() == "yuanbao.tencent.com" && strings.HasPrefix(ctx.Req().URL.Path, "/api")
+	}
+	return &proxy.Plugin{
+		Match: "yuanbao.tencent.com",
+		OnRequest: func(ctx proxy.Context) {
+			if !isAPIPath(ctx) {
+				return
+			}
+			cookie := ctx.Req().Header.Get("Cookie")
+			if cookie != "" && onCookieExtracted != nil {
+				onCookieExtracted(cookie)
+			}
+		},
+		OnResponse: func(ctx proxy.Context) {
+			if !isAPIPath(ctx) {
+				return
+			}
+			cookies := ctx.Res().Header.Values("Set-Cookie")
+			if len(cookies) > 0 {
+				cookieValue := strings.Join(cookies, "; ")
+				if onCookieExtracted != nil {
+					onCookieExtracted(cookieValue)
+				}
+			}
+		},
+	}
+}
+
 func CreateSimpleChannelInterceptorPlugin(interceptor *Interceptor, files *ChannelInjectedFiles) *proxy.Plugin {
 	version := interceptor.Version
+	assetBaseURL := ChannelAssetsBaseURLFromConfig(interceptor.Settings)
 	v := "?t=" + version
 	return &proxy.Plugin{
 		Match: "qq.com",
+		OnRequest: func(ctx proxy.Context) {
+			if mockChannelStaticAsset(ctx, ctx.Req().URL.Path, files) {
+				return
+			}
+		},
 		OnResponse: func(ctx proxy.Context) {
 			resp_content_type := strings.ToLower(ctx.GetResponseHeader("Content-Type"))
 			hostname := ctx.Req().URL.Hostname()
@@ -531,13 +578,12 @@ func CreateSimpleChannelInterceptorPlugin(interceptor *Interceptor, files *Chann
 				html := string(resp_body)
 				html = scriptSrcReg.ReplaceAllString(html, `src="$1.js`+v+`"`)
 				html = scriptHrefReg.ReplaceAllString(html, `href="$1.js`+v+`"`)
-				inserted_scripts := ""
+				var injected strings.Builder
 				if pathname == "/web/pages/feed" || pathname == "/web/pages/home" {
 					/** 核心逻辑 */
-					script_main := fmt.Sprintf(`<script>%s</script>`, files.JSHomePage)
-					inserted_scripts += script_main
+					AppendScriptSrcs(&injected, "", ChannelSrcAssetURL(assetBaseURL, "home.js"))
 				}
-				html = strings.Replace(html, "<head>", "<head>\n"+inserted_scripts, 1)
+				html = strings.Replace(html, "<head>", "<head>\n"+injected.String(), 1)
 				ctx.SetResponseBody(html)
 				return
 			}

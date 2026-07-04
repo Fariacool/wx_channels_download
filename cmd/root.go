@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -68,12 +69,12 @@ var root_cmd = &cobra.Command{
 			Cfg.Existing = true
 		}
 		if err := Cfg.LoadConfig(); err != nil {
-			 fmt.Println(fmt.Sprintf("%s加载配置文件失败 %v", error_prefix, err))
-			 os.Exit(0)
+			fmt.Println(fmt.Sprintf("%s加载配置文件失败 %v", error_prefix, err))
+			os.Exit(0)
 		}
-		need_admin_for_proxy := viper.GetBool("proxy.system") || buildtags.UsingSunnyNet
+		need_admin_for_proxy := viper.GetBool("proxy.system") || viper.GetBool("proxy.tun") || buildtags.UsingSunnyNet
 		is_admin := platform.IsAdmin()
-		if runtime.GOOS == "windows" && need_admin_for_proxy && !is_admin {
+		if runtime.GOOS == "windows" && need_admin_for_proxy && !is_admin && !cmd.HasParent() {
 			if !platform.RequestAdminPermission() {
 				fmt.Println(error_prefix + "运行失败，请右键选择「以管理员身份运行」")
 				os.Exit(0)
@@ -151,8 +152,8 @@ func root_command(cfg *config.Config) {
 	}
 	mgr := manager.NewServerManager()
 	interceptor_srv := interceptor.NewInterceptorServer(interceptor_cfg, CertFiles)
-	if !official_cfg.Disabled {
-		interceptor_srv.Interceptor.AddPostPlugin(officialaccount.CreateOfficialAccountInterceptorPlugin(official_cfg, interceptor.Assets))
+	if official_cfg.Enabled {
+		interceptor_srv.Interceptor.AddPostPlugin(officialaccount.CreateOfficialAccountInterceptorPlugin(official_cfg, interceptor.Assets, cfg.Version))
 		interceptor_srv.Interceptor.AddPostPlugin(&proxy.Plugin{
 			Match: "official.weixin.qq.com",
 			Target: &proxy.TargetConfig{
@@ -162,6 +163,26 @@ func root_command(cfg *config.Config) {
 			},
 		})
 	}
+	interceptor_srv.Interceptor.AddPostPlugin(interceptor.CreateYuanbaoTencentPlugin(func(cookieStr string) {
+		allowedKeys := map[string]bool{"hy_source": true, "hy_user": true, "hy_token": true}
+		var filtered []string
+		for _, kv := range strings.Split(cookieStr, ";") {
+			kv = strings.TrimSpace(kv)
+			idx := strings.Index(kv, "=")
+			if idx == -1 {
+				continue
+			}
+			key := kv[:idx]
+			if allowedKeys[key] {
+				filtered = append(filtered, kv)
+			}
+		}
+		if len(filtered) > 0 {
+			api_cfg.CloudflareSphCookie = strings.Join(filtered, "; ")
+			fmt.Println("yuanbao cookie")
+			fmt.Println(api_cfg.CloudflareSphCookie)
+		}
+	}))
 	mgr.RegisterServer(interceptor_srv)
 	interceptor_cfg.DownloadMaxRunning = api_cfg.MaxRunning
 	if api_cfg.RemoteServerEnabled {
@@ -207,7 +228,10 @@ func root_command(cfg *config.Config) {
 	color.Green(fmt.Sprintf("代理服务启动成功, 地址: %v", interceptor_srv.Addr()))
 
 	if !buildtags.UsingSunnyNet {
-		if !interceptor_cfg.ProxySetSystem {
+		if interceptor_cfg.ProxyTun {
+			color.Green("已启用 TUN 模式，流量将通过虚拟网卡自动转发")
+			color.Green("请打开需要下载的视频号页面进行下载")
+		} else if !interceptor_cfg.ProxySetSystem {
 			color.Red(fmt.Sprintf("当前未设置系统代理,请通过软件将流量转发至 %v", interceptor_srv.Addr()))
 			color.Red("设置成功后再打开视频号页面下载")
 		} else {
